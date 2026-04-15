@@ -1,0 +1,8938 @@
+<template>
+  <div class="p-2 h-full overflow-hidden">
+    <div class="home-shell h-full">
+      <div class="h-full home-main-pane">
+        <n-card :bordered="false" class="h-full home-main-card">
+          <div class="h-full flex flex-col">
+            <div class="px-2 pb-2 flex items-center justify-between gap-3">
+              <div class="flex items-center gap-3 min-w-0">
+                <n-dropdown
+                  trigger="click"
+                  scrollable
+                  :content-style="modelDropdownPopoverContentStyle"
+                  :menu-props="modelDropdownMenuProps"
+                  :options="modelDropdownOptions"
+                  @select="handleModelSelect"
+                >
+                  <button type="button" class="model-inline-trigger">
+                    <span class="model-inline-trigger__label">模型</span>
+                    <span class="model-inline-trigger__value">{{ selectedModelDisplayName }}</span>
+                    <n-icon :component="ChevronDownOutline" size="14" class="opacity-60" />
+                  </button>
+                </n-dropdown>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  class="rail-toggle-btn"
+                  :class="{ 'rail-toggle-btn--active': showTaskRail }"
+                  :title="hasTaskRailContent ? (showTaskRail ? '收起 Agent' : '展开 Agent') : '等待 Agent 计划'"
+                  :disabled="!hasTaskRailContent"
+                  @click="toggleTaskRail"
+                >
+                  <n-icon
+                    :component="ChevronForwardOutline"
+                    size="14"
+                    class="rail-toggle-btn__icon"
+                    :class="{ 'rail-toggle-btn__icon--open': showTaskRail }"
+                  />
+                  <span class="text-xs">{{ showTaskRail ? '收起 Agent' : 'Agent' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div
+              ref="messagesContainerRef"
+              class="flex-1 min-h-0 overflow-auto px-1 py-1"
+              @scroll.passive="handleMessagesScroll"
+            >
+              <div class="space-y-4">
+                <div v-if="loadingSessionMessages" class="h-full min-h-[220px] flex items-center justify-center">
+                  <div class="flex flex-col items-center gap-3 text-sm opacity-75">
+                    <n-spin size="small" />
+                    <span>正在加载历史会话...</span>
+                  </div>
+                </div>
+                <div v-else-if="messages.length === 0" class="h-full min-h-[220px] flex items-center justify-center">
+                  <div class="max-w-xl px-6">
+                    <div class="text-lg font-semibold mb-2 text-center">我是AI 助手,你可以和我对话或让我为你创建一个知识检索任务</div>
+                    <div class="text-sm opacity-70 whitespace-nowrap leading-6 text-left">
+                      你可以先问功能、问概念、问思路。需要我去 B 站检索并整理笔记时，再打开“知识检索”发送即可。
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  v-for="msg in messages"
+                  :key="msg.localId"
+                  class="flex gap-3"
+                  :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
+                >
+                  <template v-if="msg.role !== 'user'">
+                    <div class="mt-1 h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ai-avatar">
+                      AI
+                    </div>
+                  </template>
+
+                  <div :class="msg.role === 'user' ? 'max-w-[86%]' : 'w-full max-w-[90%]'">
+                    <div class="text-xs opacity-65 mb-1 px-1">
+                      {{ msg.role === 'user' ? currentUserLabel : '小知AI' }}
+                    </div>
+                    <div
+                      class="rounded-2xl px-4 py-3 message-bubble"
+                      :class="[
+                        msg.role === 'user' ? 'message-user' : 'message-assistant',
+                        msg.role === 'assistant' && !msg.pending ? 'message-assistant--stable' : '',
+                        msg.renderAsMarkdown ? 'message-bubble--markdown' : 'whitespace-pre-wrap break-words',
+                        msg.role === 'assistant' && msg.renderAsMarkdown ? 'message-bubble--quotable' : '',
+                        msg.pending ? 'message-pending' : '',
+                        msg.pending ? 'opacity-70' : '',
+                      ]"
+                      @contextmenu.prevent="handleMessageContextMenu($event, msg)"
+                    >
+                      <div v-if="msg.pending" class="thinking-indicator text-sm">
+                        <span class="thinking-indicator__label">浏览中</span>
+                        <span class="thinking-indicator__dots" aria-hidden="true">
+                          <i></i><i></i><i></i>
+                        </span>
+                      </div>
+                      <div v-else-if="msg.renderAsMarkdown">
+                        <div v-if="msg.markdownLabel" class="text-[11px] opacity-60 mb-2">
+                          {{ msg.markdownLabel }}
+                        </div>
+                        <MarkdownContent :source="msg.content" />
+                      </div>
+                      <div
+                        v-else-if="msg.content"
+                        :class="msg.role === 'assistant' ? 'message-plain-text' : 'whitespace-pre-wrap break-words'"
+                      >
+                        {{ msg.content }}
+                      </div>
+                      <div v-if="msg.quote?.content" class="message-quote-chip mt-3">
+                        <div class="message-quote-chip__label">{{ msg.quote.label || '引用内容' }}</div>
+                        <div class="message-quote-chip__body">{{ summarizeQuote(msg.quote.content) }}</div>
+                      </div>
+                      <div v-if="(msg.images || []).length" class="mt-3 flex flex-wrap gap-2">
+                        <button
+                          v-for="(img, imgIdx) in (msg.images || [])"
+                          :key="`${msg.localId}-img-${img.url}-${imgIdx}`"
+                          type="button"
+                          class="message-image-thumb"
+                          @click="openImagePreview(img.url, img.file_name || `图片${imgIdx + 1}`)"
+                        >
+                          <img :src="img.url" :alt="img.file_name || `图片${imgIdx + 1}`" class="message-image-thumb__img" loading="lazy" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div v-if="playlistPreviewItems(msg).length" class="mt-3 px-1">
+                      <div
+                        class="workflow-playlist-panel"
+                        :class="{
+                          'workflow-playlist-panel--compact': showTaskRail,
+                          'workflow-playlist-panel--sidebar-open': playlistPreviewSidebarOpen(msg),
+                        }"
+                      >
+                        <div class="workflow-playlist-panel__header">
+                          <div class="workflow-playlist-panel__header-main">
+                            <div class="workflow-playlist-panel__eyebrow">视频选集</div>
+                            <div class="workflow-playlist-panel__header-title">{{ msg.playlistCard?.sourceTitle || '未命名合集' }}</div>
+                          </div>
+                          <div class="workflow-playlist-panel__header-side">
+                            <div class="workflow-playlist-panel__count">
+                              {{ playlistPreviewItems(msg).length }} 集
+                            </div>
+                            <button
+                              type="button"
+                              class="workflow-playlist-panel__sidebar-toggle"
+                              @click="togglePlaylistPreviewSidebar(msg)"
+                            >
+                              {{ playlistPreviewSidebarOpen(msg) ? '收起列表' : '展开列表' }}
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          class="workflow-playlist-panel__layout"
+                          :class="{ 'workflow-playlist-panel__layout--sidebar-open': playlistPreviewSidebarOpen(msg) }"
+                        >
+                          <div class="workflow-playlist-panel__stage">
+                            <div v-if="playlistPreviewActiveEpisode(msg)" class="workflow-playlist-panel__toolbar">
+                              <div class="workflow-playlist-panel__toolbar-main">
+                                <div class="workflow-playlist-panel__toolbar-title">
+                                  {{ candidateDisplayTitle(playlistPreviewActiveEpisode(msg) || ({ title: msg.playlistCard?.sourceTitle || '' } as any), 0) }}
+                                </div>
+                                <div class="workflow-playlist-panel__toolbar-meta">
+                                  <span v-if="playlistPreviewActiveEpisode(msg)?.up">{{ String(playlistPreviewActiveEpisode(msg)?.up) }}</span>
+                                  <span v-if="playlistPreviewActiveEpisode(msg)?.duration">{{ String(playlistPreviewActiveEpisode(msg)?.duration) }}</span>
+                                  <span v-if="playlistPreviewActiveEpisode(msg)?.stats">{{ String(playlistPreviewActiveEpisode(msg)?.stats) }}</span>
+                                </div>
+                              </div>
+                              <div class="workflow-playlist-panel__actions">
+                                <n-button
+                                  size="tiny"
+                                  secondary
+                                  @click="openVideoUrl(playlistPreviewActiveEpisode(msg) || ({ url: msg.playlistCard?.sourceUrl || '' } as any))"
+                                  :disabled="!canOpenVideoUrl(playlistPreviewActiveEpisode(msg) || ({ url: msg.playlistCard?.sourceUrl || '' } as any))"
+                                >
+                                  打开当前集
+                                </n-button>
+                                <n-button
+                                  size="tiny"
+                                  type="primary"
+                                  @click="handlePlaylistPreviewEpisodeNoteAction(msg, playlistPreviewActiveEpisode(msg) || ({ url: msg.playlistCard?.sourceUrl || '' } as any))"
+                                  :loading="isSelectingWorkflowResource(playlistPreviewActiveEpisode(msg) || ({ url: msg.playlistCard?.sourceUrl || '' } as any))"
+                                  :disabled="!String((playlistPreviewActiveEpisode(msg)?.url || msg.playlistCard?.sourceUrl || '')).trim() || !chatSessionUuid"
+                                >
+                                  {{ playlistPreviewEpisodeNoteActionLabel(msg, playlistPreviewActiveEpisode(msg) || ({ title: msg.playlistCard?.sourceTitle || '' } as any)) }}
+                                </n-button>
+                              </div>
+                            </div>
+                            <div
+                              class="workflow-playlist-panel__player-shell"
+                              :class="{ 'workflow-playlist-panel__player-shell--wide': !playlistPreviewSidebarOpen(msg) || showTaskRail }"
+                            >
+                              <div class="workflow-playlist-panel__player">
+                                <video
+                                  v-if="playlistPreviewActivePlayableUrl(msg)"
+                                  :src="playlistPreviewActivePlayableUrl(msg)"
+                                  class="workflow-playlist-panel__player-frame"
+                                  controls
+                                  autoplay
+                                  playsinline
+                                  preload="auto"
+                                />
+                                <iframe
+                                  v-else-if="playlistPreviewActiveEmbedUrl(msg)"
+                                  :src="playlistPreviewActiveEmbedUrl(msg)"
+                                  class="workflow-playlist-panel__player-frame"
+                                  frameborder="0"
+                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; web-share"
+                                  allowfullscreen
+                                  webkitallowfullscreen="true"
+                                  mozallowfullscreen="true"
+                                  scrolling="no"
+                                  referrerpolicy="strict-origin-when-cross-origin"
+                                />
+                                <div v-else class="workflow-playlist-panel__empty">
+                                  当前分集暂不支持内嵌播放
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div v-if="playlistPreviewSidebarOpen(msg)" class="workflow-playlist-panel__sidebar">
+                            <div class="workflow-playlist-panel__sidebar-head">
+                              <div class="workflow-playlist-panel__sidebar-tabs">
+                                <button
+                                  type="button"
+                                  class="workflow-playlist-panel__sidebar-tab"
+                                  :class="{ 'workflow-playlist-panel__sidebar-tab--active': playlistPreviewTab(msg) === 'episodes' }"
+                                  @click="setPlaylistPreviewTab(msg, 'episodes')"
+                                >
+                                  <span>选集列表</span>
+                                  <span class="workflow-playlist-panel__sidebar-tab-badge">{{ playlistPreviewItems(msg).length }}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  class="workflow-playlist-panel__sidebar-tab"
+                                  :class="{ 'workflow-playlist-panel__sidebar-tab--active': playlistPreviewTab(msg) === 'notes' }"
+                                  @click="setPlaylistPreviewTab(msg, 'notes')"
+                                >
+                                  <span>笔记列表</span>
+                                  <span class="workflow-playlist-panel__sidebar-tab-badge">{{ playlistPreviewNoteCount(msg) }}</span>
+                                </button>
+                              </div>
+                              <div class="workflow-playlist-panel__sidebar-hint">
+                                {{
+                                  playlistPreviewTab(msg) === 'episodes'
+                                    ? '勾选后可批量生成'
+                                    : (playlistPreviewViewingNote(msg) ? 'Markdown 预览' : '点击查看已生成笔记')
+                                }}
+                              </div>
+                            </div>
+                            <template v-if="playlistPreviewTab(msg) === 'episodes'">
+                              <div class="workflow-playlist-panel__batchbar">
+                                <div class="workflow-playlist-panel__batchbar-summary">
+                                  已选 {{ selectedPlaylistPreviewEpisodeCount(msg) }} 集
+                                </div>
+                                <div class="workflow-playlist-panel__batchbar-actions">
+                                  <button
+                                    type="button"
+                                    class="workflow-playlist-panel__ghost-btn"
+                                    @click="toggleAllPlaylistPreviewEpisodes(msg)"
+                                  >
+                                    {{ playlistPreviewAllSelected(msg) ? '清空勾选' : '全选' }}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="workflow-playlist-panel__ghost-btn"
+                                    :disabled="!selectedPlaylistPreviewEpisodeCount(msg) || isPlaylistPreviewBatchSummarizing(msg)"
+                                    @click="summarizeSelectedPlaylistPreviewEpisodes(msg)"
+                                  >
+                                    总结选中
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="workflow-playlist-panel__primary-btn"
+                                    :disabled="!playlistPreviewItems(msg).length || isPlaylistPreviewBatchSummarizing(msg)"
+                                    @click="summarizeAllPlaylistPreviewEpisodes(msg)"
+                                  >
+                                    一键全选生成笔记
+                                  </button>
+                                </div>
+                              </div>
+                              <div class="workflow-playlist-panel__list">
+                                <div
+                                  v-for="(seriesVideo, seriesIdx) in playlistPreviewItems(msg)"
+                                  :key="`${msg.localId}-${playlistSeriesItemKey(seriesVideo, seriesIdx)}`"
+                                  class="workflow-playlist-episode"
+                                  :class="{ 'workflow-playlist-episode--active': workflowPlaylistEpisodeKey(seriesVideo) === playlistPreviewActiveEpisodeKey(msg) }"
+                                >
+                                  <label class="workflow-playlist-episode__select" @click.stop>
+                                    <input
+                                      type="checkbox"
+                                      class="workflow-playlist-episode__select-input"
+                                      :checked="isPlaylistPreviewEpisodeSelected(msg, seriesVideo)"
+                                      @change="togglePlaylistPreviewEpisodeSelected(msg, seriesVideo)"
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    class="workflow-playlist-episode__main"
+                                    @click="selectPlaylistPreviewEpisode(msg, seriesVideo)"
+                                  >
+                                    <div class="workflow-playlist-episode__index">{{ seriesVideo.index || seriesIdx + 1 }}</div>
+                                    <div class="workflow-playlist-episode__body">
+                                      <div class="workflow-playlist-episode__title">
+                                        {{ candidateDisplayTitle(seriesVideo, seriesIdx) }}
+                                      </div>
+                                      <div class="workflow-playlist-episode__meta">
+                                        <span v-if="seriesVideo.duration">{{ String(seriesVideo.duration) }}</span>
+                                        <span v-if="seriesVideo.up">{{ String(seriesVideo.up) }}</span>
+                                      </div>
+                                    </div>
+                                  </button>
+                                  <div class="workflow-playlist-episode__side">
+                                    <span
+                                      v-if="playlistPreviewEpisodeNoteStatusLabel(msg, seriesVideo)"
+                                      class="workflow-playlist-episode__status"
+                                      :class="`workflow-playlist-episode__status--${playlistPreviewEpisodeNoteStatus(msg, seriesVideo) || 'idle'}`"
+                                    >
+                                      {{ playlistPreviewEpisodeNoteStatusLabel(msg, seriesVideo) }}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      class="workflow-playlist-episode__note-btn"
+                                      :disabled="playlistPreviewEpisodeNoteStatus(msg, seriesVideo) === 'pending'"
+                                      @click="handlePlaylistPreviewEpisodeNoteAction(msg, seriesVideo)"
+                                    >
+                                      {{ playlistPreviewEpisodeNoteActionLabel(msg, seriesVideo) }}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+                            <template v-else>
+                              <div
+                                v-if="playlistPreviewViewingNote(msg)"
+                                class="workflow-playlist-note-view"
+                              >
+                                <div class="workflow-playlist-note-view__head">
+                                  <div class="workflow-playlist-note-view__title-wrap">
+                                    <div class="workflow-playlist-note-view__eyebrow">Markdown 笔记</div>
+                                    <div class="workflow-playlist-note-view__title">
+                                      {{ playlistPreviewViewingNote(msg)?.title }}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    class="workflow-playlist-panel__ghost-btn"
+                                    @click="backToPlaylistPreviewNoteList(msg)"
+                                  >
+                                    返回笔记列表
+                                  </button>
+                                </div>
+                                <div class="workflow-playlist-note-view__meta">
+                                  <span v-if="playlistPreviewViewingNote(msg)?.fileName">{{ playlistPreviewViewingNote(msg)?.fileName }}</span>
+                                  <span v-if="playlistPreviewViewingNote(msg)?.updatedAt">{{ formatPlaylistPreviewNoteTime(playlistPreviewViewingNote(msg)?.updatedAt) }}</span>
+                                </div>
+                                <div class="workflow-playlist-note-view__body">
+                                  <MarkdownContent :source="playlistPreviewViewingNote(msg)?.markdown || ''" />
+                                </div>
+                              </div>
+                              <div
+                                v-else-if="playlistPreviewNotes(msg).length"
+                                class="workflow-playlist-note-list"
+                              >
+                                <button
+                                  v-for="note in playlistPreviewNotes(msg)"
+                                  :key="`${msg.localId}-note-${note.episodeKey}`"
+                                  type="button"
+                                  class="workflow-playlist-note-card"
+                                  :class="{ 'workflow-playlist-note-card--disabled': note.status !== 'ready' }"
+                                  @click="note.status === 'ready' ? openPlaylistPreviewNote(msg, note) : undefined"
+                                >
+                                  <div class="workflow-playlist-note-card__head">
+                                    <span
+                                      class="workflow-playlist-note-card__status"
+                                      :class="`workflow-playlist-note-card__status--${note.status}`"
+                                    >
+                                      {{
+                                        note.status === 'ready'
+                                          ? '已生成'
+                                          : (note.status === 'pending' ? '生成中' : '失败')
+                                      }}
+                                    </span>
+                                    <span v-if="note.updatedAt" class="workflow-playlist-note-card__time">
+                                      {{ formatPlaylistPreviewNoteTime(note.updatedAt) }}
+                                    </span>
+                                  </div>
+                                  <div class="workflow-playlist-note-card__title">{{ note.title }}</div>
+                                  <div class="workflow-playlist-note-card__meta">
+                                    <span v-if="note.fileName">{{ note.fileName }}</span>
+                                    <span v-if="note.errorMessage">{{ note.errorMessage }}</span>
+                                  </div>
+                                </button>
+                              </div>
+                              <div v-else class="workflow-playlist-panel__empty-list">
+                                还没有生成分集笔记。可以回到“选集列表”单独生成，或直接一键批量生成。
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      v-if="msg.role === 'assistant' && msg.searchProgressVisible"
+                      class="mt-2 px-1"
+                    >
+                      <div class="rounded-xl p-2 search-progress-panel">
+                        <div class="text-[11px] opacity-70 mb-1">访问站点</div>
+                        <div
+                          v-if="assistantProgressLine(msg)"
+                          class="text-[11px] leading-4 search-focus-line truncate"
+                          :title="assistantProgressLine(msg)"
+                        >
+                          <a
+                            v-if="isHttpUrl(assistantProgressLine(msg))"
+                            :href="assistantProgressLine(msg)"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="underline"
+                          >
+                            {{ assistantProgressLine(msg) }}
+                          </a>
+                          <span v-else>{{ assistantProgressLine(msg) }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      v-if="msg.role === 'assistant' && (msg.task || msg.toolDecisionReason)"
+                      class="mt-2 px-1 flex flex-wrap items-center gap-2 text-xs"
+                    >
+                      <n-tag v-if="msg.task" type="info" size="small">
+                        已创建任务：{{ msg.task.job_id }}
+                      </n-tag>
+                      <n-button
+                        v-if="msg.task"
+                        text
+                        type="primary"
+                        size="tiny"
+                        @click="openJob(msg.task.job_id)"
+                      >
+                        查看任务详情
+                      </n-button>
+                    </div>
+
+                    <div v-if="shouldRenderWorkflowLearningPathSections(msg)" class="mt-3 px-1">
+                      <div class="rounded-2xl p-3 knowledge-hit-panel">
+                        <div class="text-xs opacity-70 mb-2">按学习步骤推荐的视频</div>
+                        <div
+                          v-for="section in messageWorkflowLearningPathSections(msg)"
+                          :key="`${msg.localId}-${section.stageId}`"
+                          class="mb-4 last:mb-0"
+                        >
+                          <div class="flex items-start justify-between gap-3 mb-2">
+                            <div class="min-w-0">
+                              <div class="text-sm font-semibold">
+                                第{{ section.stepIndex }}步：{{ section.title }}
+                              </div>
+                              <div v-if="section.goal" class="text-xs opacity-80 mt-1">
+                                {{ section.goal }}
+                              </div>
+                              <div v-if="section.why" class="text-[11px] opacity-65 mt-1">
+                                为什么先学：{{ section.why }}
+                              </div>
+                              <div v-if="section.practiceHint" class="text-[11px] opacity-65 mt-1">
+                                练习建议：{{ section.practiceHint }}
+                              </div>
+                            </div>
+                            <n-tag size="small" type="info">
+                              {{ Array.isArray(section.items) ? section.items.length : 0 }} 个视频
+                            </n-tag>
+                          </div>
+                          <div v-if="Array.isArray(section.items) && section.items.length" class="grid grid-cols-2 gap-2">
+                            <div
+                              v-for="(video, idx) in section.items"
+                              :key="`${section.stageId}-${video.url || video.title || idx}`"
+                              class="rounded-xl p-2 ai-candidate-card flex flex-col"
+                            >
+                              <div class="rounded-lg overflow-hidden ai-candidate-cover mb-2 relative">
+                                <button
+                                  type="button"
+                                  class="ai-candidate-cover__trigger"
+                                  @click="handleWorkflowResourceCoverClick(video)"
+                                >
+                                  <img
+                                    v-if="videoCoverUrl(video)"
+                                    :src="videoCoverUrl(video) || undefined"
+                                    alt="视频封面"
+                                    class="w-full aspect-video object-cover"
+                                    loading="lazy"
+                                    referrerpolicy="no-referrer"
+                                  />
+                                  <div v-else class="w-full aspect-video flex items-center justify-center text-xs opacity-60">
+                                    暂无封面
+                                  </div>
+                                  <div
+                                    v-if="videoEmbedUrl(video) || videoPlayableUrl(video)"
+                                    class="ai-candidate-cover__overlay"
+                                  >
+                                    <span class="ai-candidate-cover__play" title="播放视频">
+                                      <n-icon :component="Play" size="22" />
+                                    </span>
+                                  </div>
+                                </button>
+                                <button
+                                  v-if="canPreviewCandidate(video)"
+                                  type="button"
+                                  class="ai-candidate-cover__fullscreen"
+                                  title="全屏预览"
+                                  @click.stop="openCandidateFullscreen(video)"
+                                >
+                                  全屏
+                                </button>
+                              </div>
+                              <div class="min-w-0 flex-1 flex flex-col">
+                                <div class="text-xs font-semibold leading-[1.45] break-words ai-candidate-card__title line-clamp-2">
+                                  {{ candidateDisplayTitle(video, idx) }}
+                                </div>
+                                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] ai-candidate-card__meta">
+                                  <span v-if="video.up">{{ String(video.up) }}</span>
+                                  <span v-if="video.duration">{{ String(video.duration) }}</span>
+                                </div>
+                                <div v-if="candidateStatItems(video).length" class="mt-1 flex flex-wrap gap-1">
+                                  <span
+                                    v-for="(it, statIdx) in candidateStatItems(video)"
+                                    :key="`${section.stageId}-${idx}-${statIdx}-${it.label}-${it.value}`"
+                                    class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] ai-candidate-chip"
+                                  >
+                                    {{ it.label }} {{ it.value }}
+                                  </span>
+                                </div>
+                              </div>
+                              <div class="mt-2 flex items-center justify-end">
+                                <n-space size="small">
+                                  <n-button
+                                    size="tiny"
+                                    secondary
+                                    @click="openVideoUrl(video)"
+                                    :disabled="!canOpenVideoUrl(video)"
+                                  >
+                                    打开原视频
+                                  </n-button>
+                                  <n-button
+                                    size="tiny"
+                                    secondary
+                                    @click="openCandidateFullscreen(video)"
+                                    :disabled="!canPreviewCandidate(video)"
+                                  >
+                                    全屏预览
+                                  </n-button>
+                                  <n-button
+                                    v-if="isPlaylistResource(video)"
+                                    size="tiny"
+                                    secondary
+                                    @click="pushWorkflowPlaylistSeries(video)"
+                                    :loading="isWorkflowPlaylistLoading(video)"
+                                    :disabled="!chatSessionUuid"
+                                  >
+                                    {{ workflowPlaylistActionLabel(video) }}
+                                  </n-button>
+                                  <n-button
+                                    size="tiny"
+                                    type="primary"
+                                    @click="summarizeWorkflowResource(video)"
+                                    :loading="isSelectingWorkflowResource(video)"
+                                    :disabled="!String(video.url || '').trim() || !chatSessionUuid"
+                                  >
+                                    总结笔记
+                                  </n-button>
+                                </n-space>
+                              </div>
+                              <div
+                                v-if="isPlaylistResource(video) && isWorkflowPlaylistOpen(video)"
+                                class="mt-2 rounded-xl border border-slate-200/70 bg-white/70 p-2"
+                              >
+                                <div class="flex items-center justify-between gap-2 mb-2">
+                                  <div class="text-[11px] font-medium">
+                                    视频选集
+                                    <span class="opacity-60">{{ workflowPlaylistSeriesPanel(video)?.source_title || video.title }}</span>
+                                  </div>
+                                  <div class="text-[10px] opacity-60">
+                                    {{ workflowPlaylistSeriesItems(video).length || workflowPlaylistSeriesPanel(video)?.total || 0 }} 集
+                                  </div>
+                                </div>
+                                <div v-if="isWorkflowPlaylistLoading(video)" class="text-[11px] opacity-60 py-2">
+                                  正在拉取合集明细...
+                                </div>
+                                <div v-else-if="workflowPlaylistResolveError(video)" class="text-[11px] text-rose-500 py-2">
+                                  {{ workflowPlaylistResolveError(video) }}
+                                </div>
+                                <div v-else class="workflow-playlist-panel">
+                                  <div class="workflow-playlist-panel__layout">
+                                    <div class="workflow-playlist-panel__stage">
+                                      <div v-if="workflowPlaylistActiveEpisode(video)" class="workflow-playlist-panel__toolbar">
+                                        <div class="workflow-playlist-panel__toolbar-main">
+                                          <div class="workflow-playlist-panel__toolbar-title">
+                                            {{ candidateDisplayTitle(workflowPlaylistActiveEpisode(video) || video, 0) }}
+                                          </div>
+                                          <div class="workflow-playlist-panel__toolbar-meta">
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.up">{{ String(workflowPlaylistActiveEpisode(video)?.up) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.duration">{{ String(workflowPlaylistActiveEpisode(video)?.duration) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.stats">{{ String(workflowPlaylistActiveEpisode(video)?.stats) }}</span>
+                                          </div>
+                                        </div>
+                                        <div class="workflow-playlist-panel__actions">
+                                          <n-button
+                                            size="tiny"
+                                            secondary
+                                            @click="openVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!canOpenVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                          >
+                                            打开当前集
+                                          </n-button>
+                                          <n-button
+                                            size="tiny"
+                                            type="primary"
+                                            @click="summarizeWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :loading="isSelectingWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!String((workflowPlaylistActiveEpisode(video) || video).url || '').trim() || !chatSessionUuid"
+                                          >
+                                            总结当前集
+                                          </n-button>
+                                        </div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__player-shell">
+                                        <div class="workflow-playlist-panel__player">
+                                          <video
+                                            v-if="workflowPlaylistActivePlayableUrl(video)"
+                                            :src="workflowPlaylistActivePlayableUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            controls
+                                            autoplay
+                                            playsinline
+                                            preload="auto"
+                                          />
+                                          <iframe
+                                            v-else-if="workflowPlaylistActiveEmbedUrl(video)"
+                                            :src="workflowPlaylistActiveEmbedUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            frameborder="0"
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; web-share"
+                                            allowfullscreen
+                                            webkitallowfullscreen="true"
+                                            mozallowfullscreen="true"
+                                            scrolling="no"
+                                            referrerpolicy="strict-origin-when-cross-origin"
+                                          />
+                                          <div v-else class="workflow-playlist-panel__empty">
+                                            当前分集暂不支持内嵌播放
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div class="workflow-playlist-panel__sidebar">
+                                      <div class="workflow-playlist-panel__sidebar-head">
+                                        <div class="workflow-playlist-panel__sidebar-title">选集列表</div>
+                                        <div class="workflow-playlist-panel__sidebar-hint">点击切换播放</div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__list">
+                                        <button
+                                          v-for="(seriesVideo, seriesIdx) in workflowPlaylistSeriesItems(video)"
+                                          :key="playlistSeriesItemKey(seriesVideo, seriesIdx)"
+                                          type="button"
+                                          class="workflow-playlist-episode"
+                                          :class="{ 'workflow-playlist-episode--active': workflowPlaylistEpisodeKey(seriesVideo) === workflowPlaylistActiveEpisodeKey(video) }"
+                                          @click="selectWorkflowPlaylistEpisode(video, seriesVideo)"
+                                        >
+                                          <div class="workflow-playlist-episode__index">{{ seriesVideo.index || seriesIdx + 1 }}</div>
+                                          <div class="workflow-playlist-episode__body">
+                                            <div class="workflow-playlist-episode__title">
+                                              {{ candidateDisplayTitle(seriesVideo, seriesIdx) }}
+                                            </div>
+                                            <div class="workflow-playlist-episode__meta">
+                                              <span v-if="seriesVideo.duration">{{ String(seriesVideo.duration) }}</span>
+                                              <span v-if="seriesVideo.up">{{ String(seriesVideo.up) }}</span>
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div v-else class="text-xs opacity-60 rounded-xl px-3 py-3 border border-slate-200/70">
+                            这一阶段本轮还没有筛到足够匹配的视频，可继续补检索。
+                          </div>
+                        </div>
+                        <div
+                          v-for="group in workflowSupplementalResourceCardGroups(msg.agentWorkflow)"
+                          :key="`supplement-${group.label}`"
+                          class="mt-4"
+                        >
+                          <div class="text-[11px] font-medium mb-1">{{ group.label }}</div>
+                          <div class="grid grid-cols-2 gap-2">
+                            <div
+                              v-for="(video, idx) in group.items"
+                              :key="`${group.label}-${video.url || video.title || idx}`"
+                              class="rounded-xl p-2 ai-candidate-card flex flex-col"
+                            >
+                              <div class="rounded-lg overflow-hidden ai-candidate-cover mb-2 relative">
+                                <button
+                                  type="button"
+                                  class="ai-candidate-cover__trigger"
+                                  @click="handleWorkflowResourceCoverClick(video)"
+                                >
+                                  <img
+                                    v-if="videoCoverUrl(video)"
+                                    :src="videoCoverUrl(video) || undefined"
+                                    alt="视频封面"
+                                    class="w-full aspect-video object-cover"
+                                    loading="lazy"
+                                    referrerpolicy="no-referrer"
+                                  />
+                                  <div v-else class="w-full aspect-video flex items-center justify-center text-xs opacity-60">
+                                    暂无封面
+                                  </div>
+                                </button>
+                                <button
+                                  v-if="canPreviewCandidate(video)"
+                                  type="button"
+                                  class="ai-candidate-cover__fullscreen"
+                                  title="全屏预览"
+                                  @click.stop="openCandidateFullscreen(video)"
+                                >
+                                  全屏
+                                </button>
+                              </div>
+                              <div class="text-xs font-semibold leading-[1.45] break-words ai-candidate-card__title line-clamp-2">
+                                {{ candidateDisplayTitle(video, idx) }}
+                              </div>
+                              <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] ai-candidate-card__meta">
+                                <span v-if="video.up">{{ String(video.up) }}</span>
+                                <span v-if="video.duration">{{ String(video.duration) }}</span>
+                              </div>
+                              <div v-if="candidateStatItems(video).length" class="mt-1 flex flex-wrap gap-1">
+                                <span
+                                  v-for="(it, statIdx) in candidateStatItems(video)"
+                                  :key="`${group.label}-${idx}-${statIdx}-${it.label}-${it.value}`"
+                                  class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] ai-candidate-chip"
+                                >
+                                  {{ it.label }} {{ it.value }}
+                                </span>
+                              </div>
+                              <div class="mt-2 flex items-center justify-end">
+                                <n-space size="small">
+                                  <n-button size="tiny" secondary :disabled="!canOpenVideoUrl(video)" @click="openVideoUrl(video)">
+                                    打开原视频
+                                  </n-button>
+                                  <n-button size="tiny" secondary :disabled="!canPreviewCandidate(video)" @click="openCandidateFullscreen(video)">
+                                    全屏预览
+                                  </n-button>
+                                  <n-button
+                                    v-if="isPlaylistResource(video)"
+                                    size="tiny"
+                                    secondary
+                                    @click="pushWorkflowPlaylistSeries(video)"
+                                    :loading="isWorkflowPlaylistLoading(video)"
+                                    :disabled="!chatSessionUuid"
+                                  >
+                                    {{ workflowPlaylistActionLabel(video) }}
+                                  </n-button>
+                                  <n-button
+                                    size="tiny"
+                                    type="primary"
+                                    @click="summarizeWorkflowResource(video)"
+                                    :loading="isSelectingWorkflowResource(video)"
+                                    :disabled="!String(video.url || '').trim() || !chatSessionUuid"
+                                  >
+                                    总结笔记
+                                  </n-button>
+                                </n-space>
+                              </div>
+                              <div
+                                v-if="isPlaylistResource(video) && isWorkflowPlaylistOpen(video)"
+                                class="mt-2 rounded-xl border border-slate-200/70 bg-white/70 p-2"
+                              >
+                                <div class="flex items-center justify-between gap-2 mb-2">
+                                  <div class="text-[11px] font-medium">
+                                    视频选集
+                                    <span class="opacity-60">{{ workflowPlaylistSeriesPanel(video)?.source_title || video.title }}</span>
+                                  </div>
+                                  <div class="text-[10px] opacity-60">
+                                    {{ workflowPlaylistSeriesItems(video).length || workflowPlaylistSeriesPanel(video)?.total || 0 }} 集
+                                  </div>
+                                </div>
+                                <div v-if="isWorkflowPlaylistLoading(video)" class="text-[11px] opacity-60 py-2">
+                                  正在拉取合集明细...
+                                </div>
+                                <div v-else-if="workflowPlaylistResolveError(video)" class="text-[11px] text-rose-500 py-2">
+                                  {{ workflowPlaylistResolveError(video) }}
+                                </div>
+                                <div v-else class="workflow-playlist-panel">
+                                  <div class="workflow-playlist-panel__layout">
+                                    <div class="workflow-playlist-panel__stage">
+                                      <div v-if="workflowPlaylistActiveEpisode(video)" class="workflow-playlist-panel__toolbar">
+                                        <div class="workflow-playlist-panel__toolbar-main">
+                                          <div class="workflow-playlist-panel__toolbar-title">
+                                            {{ candidateDisplayTitle(workflowPlaylistActiveEpisode(video) || video, 0) }}
+                                          </div>
+                                          <div class="workflow-playlist-panel__toolbar-meta">
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.up">{{ String(workflowPlaylistActiveEpisode(video)?.up) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.duration">{{ String(workflowPlaylistActiveEpisode(video)?.duration) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.stats">{{ String(workflowPlaylistActiveEpisode(video)?.stats) }}</span>
+                                          </div>
+                                        </div>
+                                        <div class="workflow-playlist-panel__actions">
+                                          <n-button
+                                            size="tiny"
+                                            secondary
+                                            @click="openVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!canOpenVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                          >
+                                            打开当前集
+                                          </n-button>
+                                          <n-button
+                                            size="tiny"
+                                            type="primary"
+                                            @click="summarizeWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :loading="isSelectingWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!String((workflowPlaylistActiveEpisode(video) || video).url || '').trim() || !chatSessionUuid"
+                                          >
+                                            总结当前集
+                                          </n-button>
+                                        </div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__player-shell">
+                                        <div class="workflow-playlist-panel__player">
+                                          <video
+                                            v-if="workflowPlaylistActivePlayableUrl(video)"
+                                            :src="workflowPlaylistActivePlayableUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            controls
+                                            autoplay
+                                            playsinline
+                                            preload="auto"
+                                          />
+                                          <iframe
+                                            v-else-if="workflowPlaylistActiveEmbedUrl(video)"
+                                            :src="workflowPlaylistActiveEmbedUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            frameborder="0"
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; web-share"
+                                            allowfullscreen
+                                            webkitallowfullscreen="true"
+                                            mozallowfullscreen="true"
+                                            scrolling="no"
+                                            referrerpolicy="strict-origin-when-cross-origin"
+                                          />
+                                          <div v-else class="workflow-playlist-panel__empty">
+                                            当前分集暂不支持内嵌播放
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div class="workflow-playlist-panel__sidebar">
+                                      <div class="workflow-playlist-panel__sidebar-head">
+                                        <div class="workflow-playlist-panel__sidebar-title">选集列表</div>
+                                        <div class="workflow-playlist-panel__sidebar-hint">点击切换播放</div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__list">
+                                        <button
+                                          v-for="(seriesVideo, seriesIdx) in workflowPlaylistSeriesItems(video)"
+                                          :key="playlistSeriesItemKey(seriesVideo, seriesIdx)"
+                                          type="button"
+                                          class="workflow-playlist-episode"
+                                          :class="{ 'workflow-playlist-episode--active': workflowPlaylistEpisodeKey(seriesVideo) === workflowPlaylistActiveEpisodeKey(video) }"
+                                          @click="selectWorkflowPlaylistEpisode(video, seriesVideo)"
+                                        >
+                                          <div class="workflow-playlist-episode__index">{{ seriesVideo.index || seriesIdx + 1 }}</div>
+                                          <div class="workflow-playlist-episode__body">
+                                            <div class="workflow-playlist-episode__title">
+                                              {{ candidateDisplayTitle(seriesVideo, seriesIdx) }}
+                                            </div>
+                                            <div class="workflow-playlist-episode__meta">
+                                              <span v-if="seriesVideo.duration">{{ String(seriesVideo.duration) }}</span>
+                                              <span v-if="seriesVideo.up">{{ String(seriesVideo.up) }}</span>
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-else-if="shouldRenderWorkflowResourceCards(msg)" class="mt-3 px-1">
+                      <div class="rounded-2xl p-3 knowledge-hit-panel">
+                        <div class="text-xs opacity-70 mb-2">推荐资源</div>
+                        <div
+                          v-for="group in workflowResourceCardGroups(msg.agentWorkflow)"
+                          :key="group.label"
+                          class="mb-3"
+                        >
+                          <div class="text-[11px] font-medium mb-1">{{ group.label }}</div>
+                          <div class="grid grid-cols-2 gap-2">
+                            <div
+                              v-for="(video, idx) in group.items"
+                              :key="`${group.label}-${video.url || video.title || idx}`"
+                              class="rounded-xl p-2 ai-candidate-card flex flex-col"
+                            >
+                              <div class="rounded-lg overflow-hidden ai-candidate-cover mb-2 relative">
+                                <button
+                                  type="button"
+                                  class="ai-candidate-cover__trigger"
+                                  @click="handleWorkflowResourceCoverClick(video)"
+                                >
+                                  <img
+                                    v-if="videoCoverUrl(video)"
+                                    :src="videoCoverUrl(video) || undefined"
+                                    alt="视频封面"
+                                    class="w-full aspect-video object-cover"
+                                    loading="lazy"
+                                    referrerpolicy="no-referrer"
+                                  />
+                                  <div v-else class="w-full aspect-video flex items-center justify-center text-xs opacity-60">
+                                    暂无封面
+                                  </div>
+                                </button>
+                                <button
+                                  v-if="canPreviewCandidate(video)"
+                                  type="button"
+                                  class="ai-candidate-cover__fullscreen"
+                                  title="全屏预览"
+                                  @click.stop="openCandidateFullscreen(video)"
+                                >
+                                  全屏
+                                </button>
+                              </div>
+                              <div class="text-xs font-semibold leading-[1.45] break-words ai-candidate-card__title line-clamp-2">
+                                {{ candidateDisplayTitle(video, idx) }}
+                              </div>
+                              <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] ai-candidate-card__meta">
+                                <span v-if="video.up">{{ String(video.up) }}</span>
+                                <span v-if="video.duration">{{ String(video.duration) }}</span>
+                              </div>
+                              <div v-if="candidateStatItems(video).length" class="mt-1 flex flex-wrap gap-1">
+                                <span
+                                  v-for="(it, statIdx) in candidateStatItems(video)"
+                                  :key="`${group.label}-${idx}-${statIdx}-${it.label}-${it.value}`"
+                                  class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] ai-candidate-chip"
+                                >
+                                  {{ it.label }} {{ it.value }}
+                                </span>
+                              </div>
+                              <div class="mt-2 flex items-center justify-end gap-1">
+                                <n-button size="tiny" secondary :disabled="!canOpenVideoUrl(video)" @click="openVideoUrl(video)">
+                                  打开原视频
+                                </n-button>
+                                <n-button size="tiny" secondary :disabled="!canPreviewCandidate(video)" @click="openCandidateFullscreen(video)">
+                                  全屏预览
+                                </n-button>
+                                <n-button
+                                  v-if="isPlaylistResource(video)"
+                                  size="tiny"
+                                  secondary
+                                  @click="pushWorkflowPlaylistSeries(video)"
+                                  :loading="isWorkflowPlaylistLoading(video)"
+                                  :disabled="!chatSessionUuid"
+                                >
+                                  {{ workflowPlaylistActionLabel(video) }}
+                                </n-button>
+                                <n-button
+                                  size="tiny"
+                                  type="primary"
+                                  @click="summarizeWorkflowResource(video)"
+                                  :loading="isSelectingWorkflowResource(video)"
+                                  :disabled="!String(video.url || '').trim() || !chatSessionUuid"
+                                >
+                                  总结笔记
+                                </n-button>
+                              </div>
+                              <div
+                                v-if="isPlaylistResource(video) && isWorkflowPlaylistOpen(video)"
+                                class="mt-2 rounded-xl border border-slate-200/70 bg-white/70 p-2"
+                              >
+                                <div class="flex items-center justify-between gap-2 mb-2">
+                                  <div class="text-[11px] font-medium">
+                                    视频选集
+                                    <span class="opacity-60">{{ workflowPlaylistSeriesPanel(video)?.source_title || video.title }}</span>
+                                  </div>
+                                  <div class="text-[10px] opacity-60">
+                                    {{ workflowPlaylistSeriesItems(video).length || workflowPlaylistSeriesPanel(video)?.total || 0 }} 集
+                                  </div>
+                                </div>
+                                <div v-if="isWorkflowPlaylistLoading(video)" class="text-[11px] opacity-60 py-2">
+                                  正在拉取合集明细...
+                                </div>
+                                <div v-else-if="workflowPlaylistResolveError(video)" class="text-[11px] text-rose-500 py-2">
+                                  {{ workflowPlaylistResolveError(video) }}
+                                </div>
+                                <div v-else class="workflow-playlist-panel">
+                                  <div class="workflow-playlist-panel__layout">
+                                    <div class="workflow-playlist-panel__stage">
+                                      <div v-if="workflowPlaylistActiveEpisode(video)" class="workflow-playlist-panel__toolbar">
+                                        <div class="workflow-playlist-panel__toolbar-main">
+                                          <div class="workflow-playlist-panel__toolbar-title">
+                                            {{ candidateDisplayTitle(workflowPlaylistActiveEpisode(video) || video, 0) }}
+                                          </div>
+                                          <div class="workflow-playlist-panel__toolbar-meta">
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.up">{{ String(workflowPlaylistActiveEpisode(video)?.up) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.duration">{{ String(workflowPlaylistActiveEpisode(video)?.duration) }}</span>
+                                            <span v-if="workflowPlaylistActiveEpisode(video)?.stats">{{ String(workflowPlaylistActiveEpisode(video)?.stats) }}</span>
+                                          </div>
+                                        </div>
+                                        <div class="workflow-playlist-panel__actions">
+                                          <n-button
+                                            size="tiny"
+                                            secondary
+                                            @click="openVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!canOpenVideoUrl(workflowPlaylistActiveEpisode(video) || video)"
+                                          >
+                                            打开当前集
+                                          </n-button>
+                                          <n-button
+                                            size="tiny"
+                                            type="primary"
+                                            @click="summarizeWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :loading="isSelectingWorkflowResource(workflowPlaylistActiveEpisode(video) || video)"
+                                            :disabled="!String((workflowPlaylistActiveEpisode(video) || video).url || '').trim() || !chatSessionUuid"
+                                          >
+                                            总结当前集
+                                          </n-button>
+                                        </div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__player-shell">
+                                        <div class="workflow-playlist-panel__player">
+                                          <video
+                                            v-if="workflowPlaylistActivePlayableUrl(video)"
+                                            :src="workflowPlaylistActivePlayableUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            controls
+                                            autoplay
+                                            playsinline
+                                            preload="auto"
+                                          />
+                                          <iframe
+                                            v-else-if="workflowPlaylistActiveEmbedUrl(video)"
+                                            :src="workflowPlaylistActiveEmbedUrl(video)"
+                                            class="workflow-playlist-panel__player-frame"
+                                            frameborder="0"
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; web-share"
+                                            allowfullscreen
+                                            webkitallowfullscreen="true"
+                                            mozallowfullscreen="true"
+                                            scrolling="no"
+                                            referrerpolicy="strict-origin-when-cross-origin"
+                                          />
+                                          <div v-else class="workflow-playlist-panel__empty">
+                                            当前分集暂不支持内嵌播放
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div class="workflow-playlist-panel__sidebar">
+                                      <div class="workflow-playlist-panel__sidebar-head">
+                                        <div class="workflow-playlist-panel__sidebar-title">选集列表</div>
+                                        <div class="workflow-playlist-panel__sidebar-hint">点击切换播放</div>
+                                      </div>
+                                      <div class="workflow-playlist-panel__list">
+                                        <button
+                                          v-for="(seriesVideo, seriesIdx) in workflowPlaylistSeriesItems(video)"
+                                          :key="playlistSeriesItemKey(seriesVideo, seriesIdx)"
+                                          type="button"
+                                          class="workflow-playlist-episode"
+                                          :class="{ 'workflow-playlist-episode--active': workflowPlaylistEpisodeKey(seriesVideo) === workflowPlaylistActiveEpisodeKey(video) }"
+                                          @click="selectWorkflowPlaylistEpisode(video, seriesVideo)"
+                                        >
+                                          <div class="workflow-playlist-episode__index">{{ seriesVideo.index || seriesIdx + 1 }}</div>
+                                          <div class="workflow-playlist-episode__body">
+                                            <div class="workflow-playlist-episode__title">
+                                              {{ candidateDisplayTitle(seriesVideo, seriesIdx) }}
+                                            </div>
+                                            <div class="workflow-playlist-episode__meta">
+                                              <span v-if="seriesVideo.duration">{{ String(seriesVideo.duration) }}</span>
+                                              <span v-if="seriesVideo.up">{{ String(seriesVideo.up) }}</span>
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-if="msg.role === 'assistant' && (msg.knowledgeHits || []).length" class="mt-3 px-1">
+                      <div class="rounded-2xl p-3 knowledge-hit-panel">
+                        <div class="flex items-center justify-between gap-2 mb-2">
+                          <div class="text-xs knowledge-hit-panel__title">知识命中（全局知识库）</div>
+                          <n-tag size="small" type="success">{{ (msg.knowledgeHits || []).length }}</n-tag>
+                        </div>
+                        <div class="space-y-2">
+                          <div
+                            v-for="(hit, idx) in (msg.knowledgeHits || [])"
+                            :key="knowledgeHitKey(hit, idx)"
+                            class="rounded-xl p-3 knowledge-hit-card"
+                          >
+                            <div class="flex items-start justify-between gap-3">
+                              <div class="min-w-0 flex-1">
+                                <div class="text-xs knowledge-hit-card__type mb-1">
+                                  {{ hit.doc_type === 'video' ? '视频笔记' : '主题笔记' }}
+                                </div>
+                                <div class="text-sm font-medium leading-5 break-words knowledge-hit-card__title">
+                                  {{ knowledgeHitDisplayTitle(hit) }}
+                                </div>
+                                <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs knowledge-hit-card__meta">
+                                  <span v-if="hit.up_name">UP：{{ String(hit.up_name) }}</span>
+                                  <span v-if="hit.duration_text">时长：{{ String(hit.duration_text) }}</span>
+                                </div>
+                                <div v-if="hit.snippet" class="text-xs knowledge-hit-card__snippet mt-2 break-words">
+                                  {{ String(hit.snippet) }}
+                                </div>
+                              </div>
+                              <div class="flex flex-col gap-1 shrink-0">
+                                <n-button
+                                  v-if="hit.note_md_path"
+                                  size="tiny"
+                                  type="primary"
+                                  @click="downloadKnowledgeNote(hit)"
+                                >
+                                  查看笔记
+                                </n-button>
+                                <n-button
+                                  v-if="hit.source_url"
+                                  size="tiny"
+                                  secondary
+                                  @click="openKnowledgeHitSource(hit)"
+                                >
+                                  查看来源
+                                </n-button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="text-xs knowledge-hit-panel__footer mt-2">
+                          命中的是全局共享知识库结果；如果你仍要重新检索最新视频，可以继续让我创建任务。
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      v-if="msg.role === 'assistant' && msg.task?.job_id && shouldRenderCandidatePanel(msg)"
+                      class="mt-3 px-1"
+                    >
+                      <div
+                        v-if="jobVideoCandidates(msg.task.job_id).length"
+                        class="rounded-2xl p-3 ai-candidate-panel"
+                      >
+                        <div class="mb-2 flex items-center justify-between gap-2">
+                          <div class="text-xs ai-candidate-panel__title">AI 挑选的相关视频（可多选加入任务队列）</div>
+                          <div class="flex items-center gap-2">
+                            <span class="text-[11px] opacity-70">
+                              已选 {{ selectedCandidateCount(msg.task.job_id) }} / {{ jobVideoCandidates(msg.task.job_id).length }}
+                            </span>
+                            <n-button size="tiny" secondary @click="selectAllCandidates(msg.task.job_id)">全选</n-button>
+                            <n-button size="tiny" secondary @click="clearSelectedCandidates(msg.task.job_id)">清空</n-button>
+                            <n-button
+                              size="tiny"
+                              type="primary"
+                              @click="selectCandidateVideosBatch(msg.task.job_id)"
+                              :loading="isBatchSelecting(msg.task.job_id)"
+                              :disabled="!chatSessionUuid || selectedCandidateCount(msg.task.job_id) === 0"
+                            >
+                              总结选中视频
+                            </n-button>
+                          </div>
+                        </div>
+
+                        <div class="grid grid-cols-3 gap-2">
+                          <div
+                            v-for="(video, idx) in pagedJobVideoCandidates(msg.task.job_id)"
+                            :key="`${msg.task.job_id}-${video.url || video.title || idx}`"
+                            class="rounded-xl p-2 ai-candidate-card flex flex-col"
+                          >
+                            <!-- Thumbnail / Inline Player -->
+                            <div class="rounded-lg overflow-hidden ai-candidate-cover mb-2">
+                              <template v-if="activeVideoPreviewKey(msg.task.job_id) === videoPreviewKey(video) && videoPlayableUrl(video)">
+                                <video
+                                  :src="videoPlayableUrl(video) || undefined"
+                                  class="w-full aspect-video bg-black"
+                                  controls
+                                  playsinline
+                                  preload="auto"
+                                />
+                                <div class="ai-candidate-cover__actions">
+                                  <button
+                                    type="button"
+                                    class="ai-candidate-cover__action"
+                                    title="全屏预览"
+                                    @click.stop="openCandidateFullscreen(video)"
+                                  >
+                                    全屏
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="ai-candidate-cover__action"
+                                    title="收起播放"
+                                    @click.stop="toggleVideoPreview(msg.task.job_id, video)"
+                                  >
+                                    收起
+                                  </button>
+                                </div>
+                              </template>
+                              <template v-else-if="activeVideoPreviewKey(msg.task.job_id) === videoPreviewKey(video) && videoEmbedUrl(video)">
+                                <iframe
+                                  :src="videoEmbedUrl(video) || undefined"
+                                  class="w-full aspect-video bg-black"
+                                  frameborder="0"
+                                  allow="autoplay; fullscreen"
+                                  allowfullscreen
+                                  scrolling="no"
+                                />
+                                <div class="ai-candidate-cover__actions">
+                                  <button
+                                    type="button"
+                                    class="ai-candidate-cover__action"
+                                    title="全屏预览"
+                                    @click.stop="openCandidateFullscreen(video)"
+                                  >
+                                    全屏
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="ai-candidate-cover__action"
+                                    title="收起播放"
+                                    @click.stop="toggleVideoPreview(msg.task.job_id, video)"
+                                  >
+                                    收起
+                                  </button>
+                                </div>
+                              </template>
+                              <template v-else>
+                                <button
+                                  type="button"
+                                  class="ai-candidate-cover__trigger"
+                                  @click="handleCandidateCoverClick(msg.task.job_id, video)"
+                                >
+                                  <img
+                                    v-if="videoCoverUrl(video)"
+                                    :src="videoCoverUrl(video) || undefined"
+                                    alt="视频封面"
+                                    class="w-full aspect-video object-cover"
+                                    loading="lazy"
+                                    referrerpolicy="no-referrer"
+                                  />
+                                  <div v-else class="w-full aspect-video flex items-center justify-center text-xs opacity-60">
+                                    暂无封面
+                                  </div>
+                                  <div
+                                    v-if="videoEmbedUrl(video) || videoPlayableUrl(video)"
+                                    class="ai-candidate-cover__overlay"
+                                  >
+                                    <span class="ai-candidate-cover__play" title="播放视频">
+                                      <n-icon :component="Play" size="22" />
+                                    </span>
+                                  </div>
+                                </button>
+                                <button
+                                  v-if="videoEmbedUrl(video) || videoPlayableUrl(video)"
+                                  type="button"
+                                  class="ai-candidate-cover__fullscreen"
+                                  title="全屏预览"
+                                  @click.stop="openCandidateFullscreen(video)"
+                                >
+                                  全屏
+                                </button>
+                              </template>
+                            </div>
+
+                            <!-- Content -->
+                            <div class="min-w-0 flex-1 flex flex-col">
+                              <label class="inline-flex items-center gap-1.5 text-xs mb-1 opacity-75 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  :checked="isCandidateSelected(msg.task.job_id, video)"
+                                  @change="toggleCandidateSelected(msg.task.job_id, video)"
+                                />
+                                <span>加入队列总结</span>
+                              </label>
+                              <div class="text-xs font-semibold leading-[1.45] break-words ai-candidate-card__title line-clamp-2">
+                                {{ candidateDisplayTitle(video, idx) }}
+                              </div>
+                              <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] ai-candidate-card__meta">
+                                <span v-if="video.up">{{ String(video.up) }}</span>
+                                <span v-if="video.duration">{{ String(video.duration) }}</span>
+                              </div>
+                              <div v-if="candidateStatItems(video).length" class="mt-1 flex flex-wrap gap-1">
+                                <span
+                                  v-for="(it, statIdx) in candidateStatItems(video)"
+                                  :key="`${statIdx}-${it.label}-${it.value}`"
+                                  class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] ai-candidate-chip"
+                                >
+                                  {{ it.label }} {{ it.value }}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div class="mt-2 flex items-center justify-end">
+                              <n-space size="small">
+                                <n-button
+                                  size="tiny"
+                                  secondary
+                                  @click="openVideoUrl(video)"
+                                  :disabled="!canOpenVideoUrl(video)"
+                                >
+                                  打开原视频
+                                </n-button>
+                                <n-button
+                                  size="tiny"
+                                  secondary
+                                  @click="openCandidateFullscreen(video)"
+                                  :disabled="!canPreviewCandidate(video)"
+                                >
+                                  全屏预览
+                                </n-button>
+                                <n-button
+                                  size="tiny"
+                                  type="primary"
+                                  @click="selectCandidateVideo(msg.task.job_id, video)"
+                                  :loading="isSelectingCandidateVideo(msg.task.job_id, video)"
+                                  :disabled="!String(video.url || '').trim() || !chatSessionUuid"
+                                >
+                                  总结笔记
+                                </n-button>
+                              </n-space>
+                            </div>
+
+                          </div>
+                        </div>
+                        <div v-if="jobVideoCandidates(msg.task.job_id).length > candidatePageSize()" class="mt-3 flex items-center justify-end gap-2 text-xs">
+                          <n-button size="tiny" secondary :disabled="candidateCurrentPage(msg.task.job_id) <= 1" @click="setCandidatePage(msg.task.job_id, candidateCurrentPage(msg.task.job_id) - 1)">
+                            上一页
+                          </n-button>
+                          <span class="opacity-70">
+                            第 {{ candidateCurrentPage(msg.task.job_id) }} / {{ candidateTotalPages(msg.task.job_id) }} 页
+                          </span>
+                          <n-button size="tiny" secondary :disabled="candidateCurrentPage(msg.task.job_id) >= candidateTotalPages(msg.task.job_id)" @click="setCandidatePage(msg.task.job_id, candidateCurrentPage(msg.task.job_id) + 1)">
+                            下一页
+                          </n-button>
+                        </div>
+                      </div>
+                      <div
+                        v-else-if="isTopicTask(msg.task.job_id)"
+                        class="text-xs opacity-60"
+                      >
+                        候选视频将在任务检索阶段完成后显示在这里。
+                      </div>
+                    </div>
+                  </div>
+
+                  <template v-if="msg.role === 'user'">
+                    <div class="mt-1 h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold user-avatar">
+                      {{ currentUserLabel.slice(0, 1) }}
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <div class="pt-3">
+              <div class="rounded-[24px] composer-shell px-4 py-3" @paste.capture="handleComposerPaste">
+                <div class="mb-2 flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="search-mode-chip"
+                      :class="{ 'search-mode-chip--active': retrievalModeNetwork }"
+                      :disabled="!knowledgeRetrievalEnabled"
+                      @click="retrievalModeNetwork = !retrievalModeNetwork"
+                    >
+                      联网检索
+                    </button>
+                    <button
+                      type="button"
+                      class="search-mode-chip"
+                      :class="{ 'search-mode-chip--active': retrievalModeBili }"
+                      :disabled="!knowledgeRetrievalEnabled"
+                      @click="retrievalModeBili = !retrievalModeBili"
+                    >
+                      B站检索
+                    </button>
+                    <button
+                      type="button"
+                      class="search-mode-chip"
+                      :class="{ 'search-mode-chip--active': retrievalModeDouyin }"
+                      :disabled="!knowledgeRetrievalEnabled"
+                      @click="retrievalModeDouyin = !retrievalModeDouyin"
+                    >
+                      抖音检索
+                    </button>
+
+                  </div>
+                </div>
+
+                <div v-if="composerQuote?.content" class="composer-quote mb-3">
+                  <div class="composer-quote__head">
+                    <span>{{ composerQuote.label || '引用内容' }}</span>
+                    <button type="button" class="composer-quote__remove" @click="clearComposerQuote">移除</button>
+                  </div>
+                </div>
+
+                <div v-if="composerImages.length" class="mb-3 flex flex-wrap gap-2">
+                  <div
+                    v-for="(img, idx) in composerImages"
+                    :key="img.localId || `${img.url}-${idx}`"
+                    class="composer-image-chip"
+                  >
+                    <button
+                      type="button"
+                      class="composer-image-chip__button"
+                      @click="openImagePreview(img.previewUrl || img.url, img.file_name || `图片${idx + 1}`)"
+                    >
+                      <img :src="img.previewUrl || img.url" :alt="img.file_name || `图片${idx + 1}`" class="composer-image-chip__img" />
+                    </button>
+                    <div
+                      v-if="img.uploadStatus === 'uploading' || img.uploadStatus === 'failed'"
+                      class="composer-image-chip__overlay"
+                      :class="{ 'composer-image-chip__overlay--error': img.uploadStatus === 'failed' }"
+                    >
+                      <div
+                        v-if="img.uploadStatus === 'uploading'"
+                        class="composer-image-chip__progress"
+                        :style="{ '--progress': `${Math.max(0, Math.min(100, Number(img.uploadProgress || 0)))}%` }"
+                      >
+                        <span>{{ Math.max(0, Math.min(100, Number(img.uploadProgress || 0))) }}%</span>
+                      </div>
+                      <button
+                        v-else
+                        type="button"
+                        class="composer-image-chip__retry"
+                        :title="img.errorMessage || '重新上传'"
+                        @click.stop="retryComposerImage(img.localId || '')"
+                      >
+                        <n-icon :component="RefreshOutline" size="18" />
+                      </button>
+                    </div>
+                    <button type="button" class="composer-image-chip__remove" @click.stop="removeComposerImage(idx)">×</button>
+                  </div>
+                </div>
+
+                <n-input
+                  ref="composerInputRef"
+                  v-model:value="userInput"
+                  type="textarea"
+                  :autosize="{ minRows: 3, maxRows: 8 }"
+                  class="chat-composer-input"
+                  placeholder="像聊天一样输入问题（如：你能帮我做什么 / 什么是LLM？）"
+                  @compositionstart="onInputCompositionStart"
+                  @compositionend="onInputCompositionEnd"
+                  @keydown.enter.exact.prevent="handleEnterSend"
+                />
+
+                <div class="mt-3 flex items-center justify-between gap-3">
+                  <div class="text-xs opacity-70">
+                    Enter发送 · Shift+Enter换行 · 支持上传图片与 {{ pasteShortcutLabel }} 粘贴图片
+                  </div>
+                  <n-space align="center">
+                    <input
+                      ref="composerImageInputRef"
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      class="hidden"
+                      @change="handleComposerFileInputChange"
+                    />
+                    <n-button quaternary :loading="uploadingComposerImages" @click="openComposerImagePicker">上传图片</n-button>
+                    <n-button @click="clearInput" quaternary>清空</n-button>
+                    <button
+                      type="button"
+                      class="knowledge-toggle"
+                      :class="{ 'knowledge-toggle--active': knowledgeRetrievalEnabled }"
+                      @click="toggleKnowledgeRetrieval"
+                    >
+                      知识检索
+                    </button>
+                    <button
+                      type="button"
+                      class="send-icon-btn"
+                      :class="{ 'send-icon-btn--stopping': sending }"
+                      :disabled="sending ? stoppingReply : ((!userInput.trim() && !composerImages.length && !composerQuote) || uploadingComposerImages || hasFailedComposerImages)"
+                      :title="sending ? '停止回复' : '发送'"
+                      @click="sending ? stopCurrentReply() : sendMessage()"
+                    >
+                      <n-icon :component="sending ? StopOutline : ArrowUpOutline" size="18" />
+                    </button>
+                  </n-space>
+                </div>
+              </div>
+            </div>
+          </div>
+        </n-card>
+      </div>
+
+      <div class="h-full task-rail-shell" :class="{ 'task-rail-shell--open': showTaskRail }">
+        <div class="h-full task-rail-shell__inner">
+          <transition name="task-rail-drawer" appear>
+            <n-card v-if="showTaskRail" :bordered="false" class="h-full right-rail-card">
+          <template #header>
+            <div class="flex items-center justify-between">
+              <span class="font-semibold">Agent</span>
+              <n-tag v-if="jobsStore.currentJobId" size="small" :type="tagType(currentSnapshot?.status)">
+                {{ statusLabel(currentSnapshot?.status) }}
+              </n-tag>
+              <n-tag v-else-if="currentRailWorkflow" size="small" type="info">
+                {{ workflowStatusLabel(currentRailWorkflow?.master_plan?.workflow_status) }}
+              </n-tag>
+            </div>
+          </template>
+
+          <template v-if="jobsStore.currentJobId || currentRailWorkflow">
+            <div class="h-full min-h-0 flex flex-col gap-3 overflow-auto pr-1 right-rail-scroll">
+              <div v-if="jobsStore.currentJobId" class="rail-section rail-section--meta">
+                <div class="text-xs opacity-70 mb-1">当前任务ID</div>
+                <div class="font-mono text-xs break-all">{{ jobsStore.currentJobId }}</div>
+              </div>
+
+              <div v-if="jobsStore.currentJobId" class="rail-section rail-section--stage">
+                <div class="text-xs opacity-70 mb-1">正在进行的步骤</div>
+                <div class="font-medium">{{ humanizeStage(currentSnapshot?.stage || '') || '等待中' }}</div>
+                <div class="text-xs opacity-70 mt-1">{{ humanizeDetail(currentSnapshot?.detail || '', currentSnapshot?.stage || '') || '系统将自动更新' }}</div>
+              </div>
+
+              <div v-if="jobsStore.currentJobId" class="rail-section rail-section--actions">
+                <div class="text-xs opacity-70 mb-1">快捷操作</div>
+                <n-space vertical>
+                  <n-button block @click="refreshCurrentJob" :disabled="!jobsStore.currentJobId">刷新当前任务</n-button>
+                  <n-button block secondary @click="openJob(jobsStore.currentJobId)">打开任务详情</n-button>
+                  <n-button block secondary @click="toggleCurrentJobSse" :disabled="!jobsStore.currentJobId">
+                    {{ currentSseButtonText }}
+                  </n-button>
+                </n-space>
+                <div class="text-xs mt-2">
+                  <span class="opacity-70">实时连接：</span>
+                  <span :class="currentSseColorClass">{{ currentSseLabel }}</span>
+                </div>
+              </div>
+
+              <div
+                v-if="currentQueueBatch || currentQueueRuntime"
+                class="rail-section rail-section--plain"
+              >
+                <div class="text-xs opacity-70 mb-2">当前队列状态</div>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                  <div class="rail-subpanel p-2">
+                    <div class="opacity-60">你的队列</div>
+                    <div class="font-medium">
+                      {{ currentQueueBatch?.user_pending_count ?? currentQueueRuntime?.user_pending_count ?? 0 }}
+                    </div>
+                  </div>
+                  <div class="rail-subpanel p-2">
+                    <div class="opacity-60">全局队列</div>
+                    <div class="font-medium">
+                      {{ currentQueueBatch?.global_pending_count ?? currentQueueRuntime?.global_pending_count ?? 0 }}
+                    </div>
+                  </div>
+                  <div class="rail-subpanel p-2">
+                    <div class="opacity-60">已完成</div>
+                    <div class="font-medium">
+                      {{ currentQueueBatch?.completed_count ?? 0 }}
+                    </div>
+                  </div>
+                  <div class="rail-subpanel p-2">
+                    <div class="opacity-60">我的排位</div>
+                    <div class="font-medium">
+                      {{ currentQueueRuntime?.user_position ?? currentQueueBatch?.user_position ?? '--' }}
+                    </div>
+                  </div>
+                  <div class="rail-subpanel p-2">
+                    <div class="opacity-60">全局排位</div>
+                    <div class="font-medium">
+                      {{ currentQueueRuntime?.global_position ?? currentQueueBatch?.global_position ?? '--' }}
+                    </div>
+                  </div>
+                </div>
+                <div v-if="currentQueueBatch?.current_processing_item?.title" class="text-xs mt-2">
+                  <span class="opacity-70">正在处理：</span>
+                  <span class="font-medium">{{ currentQueueBatch?.current_processing_item?.title }}</span>
+                </div>
+                <div v-if="currentQueueBatchCompletedItems.length" class="mt-2 space-y-2">
+                  <div class="text-xs opacity-70">已完成视频笔记（可先看）</div>
+                  <div
+                    v-for="(doneItem, idx) in currentQueueBatchCompletedItems.slice(-3)"
+                    :key="`${doneItem.child_job_id || idx}`"
+                    class="rail-subpanel p-2"
+                  >
+                    <div class="text-xs font-medium mb-1">{{ (!looksLikeStatsOnlyTitle(doneItem.title || '') && doneItem.title) ? doneItem.title : `视频 ${idx + 1}` }}</div>
+                    <pre class="text-[11px] leading-5 whitespace-pre-wrap break-words font-sans rail-note-preview">{{ String(doneItem.note_preview || '') }}</pre>
+                    <div v-if="doneItem.child_job_id" class="flex gap-1 mt-2">
+                      <n-button
+                        size="tiny"
+                        tag="a"
+                        :href="childNoteDownloadUrl(doneItem.child_job_id)"
+                        target="_blank"
+                        :disabled="!doneItem.child_job_id"
+                      >
+                        下载 MD
+                      </n-button>
+                      <n-button
+                        size="tiny"
+                        type="primary"
+                        :loading="childNoteLoadingByJobId[doneItem.child_job_id]"
+                        :disabled="hasJobNoteMessageInCurrentChat(doneItem.child_job_id) || childNoteLoadingByJobId[doneItem.child_job_id]"
+                        @click="addChildNoteToChat(doneItem.child_job_id, (!looksLikeStatsOnlyTitle(doneItem.title || '') && doneItem.title) ? doneItem.title : `视频 ${idx + 1}`)"
+                      >
+                        {{ hasJobNoteMessageInCurrentChat(doneItem.child_job_id) ? '已在对话中' : '加入对话' }}
+                      </n-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="currentRailWorkflow" class="rail-section rail-section--plain">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                  <div class="text-xs opacity-70">Agent 工作流</div>
+                  <div class="flex items-center gap-2">
+                    <n-button
+                      v-if="jobsStore.currentJobId"
+                      size="tiny"
+                      quaternary
+                      type="primary"
+                      :loading="workflowReplayLoading('job', jobsStore.currentJobId)"
+                      @click="toggleCurrentJobWorkflowReplay"
+                    >
+                      {{ workflowReplayOpen('job', jobsStore.currentJobId) ? '收起完整回放' : '回放完整任务链' }}
+                    </n-button>
+                    <n-tag size="small" type="info">
+                      {{ workflowStatusLabel(currentRailWorkflow?.master_plan?.workflow_status) }}
+                    </n-tag>
+                  </div>
+                </div>
+                <div class="rail-subpanel p-2 space-y-3">
+                  <div v-if="workflowCurrentStage(currentRailWorkflow)" class="text-xs">
+                    <span class="opacity-60">当前阶段：</span>
+                    <span class="font-medium">{{ workflowCurrentStage(currentRailWorkflow) }}</span>
+                  </div>
+                  <div v-if="workflowDecisionText(currentRailWorkflow)" class="text-xs leading-5 break-words">
+                    <span class="opacity-60">主决策：</span>
+                    <span>{{ workflowDecisionText(currentRailWorkflow) }}</span>
+                  </div>
+                  <div>
+                    <div class="text-xs opacity-70 mb-2">任务图</div>
+                    <div class="space-y-2">
+                      <div
+                        v-for="task in workflowTaskPreview(currentRailWorkflow)"
+                        :key="task.task_id"
+                        class="rounded-xl border border-slate-200/60 px-2 py-2"
+                      >
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="text-xs font-medium break-words">{{ workflowTaskDisplayName(task) }}</div>
+                          <n-tag size="tiny" :type="String(task.status || '') === 'completed' ? 'success' : String(task.status || '') === 'failed' ? 'error' : 'default'">
+                            {{ workflowStatusLabel(task.status) }}
+                          </n-tag>
+                        </div>
+                        <div class="text-[11px] opacity-70 mt-1 break-words">
+                          {{ task.summary_for_ui || task.task_goal || '等待执行' }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="workflowRecentTrace(currentRailWorkflow).length">
+                    <div class="text-xs opacity-70 mb-2">最近执行</div>
+                    <div class="space-y-2">
+                      <div
+                        v-for="trace in workflowRecentTrace(currentRailWorkflow)"
+                        :key="`${trace.task_id}-${trace.ts || ''}`"
+                        class="rounded-xl border border-slate-200/60 px-2 py-2"
+                      >
+                        <div class="text-xs font-medium">{{ workflowIdentifierLabel(trace.task_id) || '执行步骤' }}</div>
+                        <div class="text-[11px] opacity-70 break-words mt-1">
+                          {{ trace.compressed_result?.key_result || trace.compressed_result?.what_was_done || workflowStatusLabel(trace.status) }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="workflowErrorPreview(currentRailWorkflow).length">
+                    <div class="text-xs opacity-70 mb-2">错误恢复</div>
+                    <div
+                      v-for="row in workflowErrorPreview(currentRailWorkflow)"
+                      :key="`${row.task_id || 'err'}-${row.ts || ''}`"
+                      class="rounded-xl border border-red-200/70 px-2 py-2"
+                    >
+                      <div class="text-xs font-medium">{{ workflowIdentifierLabel(row.task_id) || '系统错误' }}</div>
+                      <div class="text-[11px] opacity-80 break-words mt-1">{{ row.error_message || row.error_type || '未知错误' }}</div>
+                      <div v-if="row.recovery_action" class="text-[11px] opacity-70 mt-1">恢复：{{ row.recovery_action }}</div>
+                    </div>
+                  </div>
+                  <div v-if="jobsStore.currentJobId && workflowReplayOpen('job', jobsStore.currentJobId)">
+                    <n-spin :show="workflowReplayLoading('job', jobsStore.currentJobId)">
+                      <div
+                        v-if="workflowReplayRecord('job', jobsStore.currentJobId)"
+                        class="rounded-xl border border-slate-200/70 px-2 py-3 bg-white/70 space-y-3"
+                      >
+                        <div class="text-[11px] opacity-70 break-words">
+                          记录键：{{ workflowReplayRecord('job', jobsStore.currentJobId)?.state_key }}
+                        </div>
+                        <div class="grid grid-cols-1 gap-1 text-[11px] opacity-80">
+                          <div v-if="workflowReplayRecord('job', jobsStore.currentJobId)?.updated_at">
+                            更新时间：{{ workflowReplayRecord('job', jobsStore.currentJobId)?.updated_at }}
+                          </div>
+                          <div v-if="workflowReplayRecord('job', jobsStore.currentJobId)?.finished_at">
+                            结束时间：{{ workflowReplayRecord('job', jobsStore.currentJobId)?.finished_at }}
+                          </div>
+                        </div>
+                        <div v-if="workflowReplayArtifactsPreview(workflowReplayRecord('job', jobsStore.currentJobId)).length">
+                          <div class="text-xs opacity-70 mb-1">运行态摘要</div>
+                          <div
+                            v-for="row in workflowReplayArtifactsPreview(workflowReplayRecord('job', jobsStore.currentJobId))"
+                            :key="`job-${jobsStore.currentJobId}-${row.label}`"
+                            class="text-[11px] leading-5 break-words"
+                          >
+                            <span class="font-medium">{{ row.label }}：</span>{{ row.value }}
+                          </div>
+                        </div>
+                        <div>
+                          <div class="text-xs opacity-70 mb-2">完整任务图</div>
+                          <div class="space-y-2 max-h-72 overflow-auto pr-1">
+                            <div
+                              v-for="task in workflowAllTasks(workflowReplayRecord('job', jobsStore.currentJobId)?.workflow)"
+                              :key="`job-${jobsStore.currentJobId}-${task.task_id}`"
+                              class="rounded-xl border border-slate-200/70 px-2 py-2"
+                            >
+                              <div class="flex items-center justify-between gap-2">
+                                <div class="text-xs font-medium break-words">{{ workflowTaskDisplayName(task) }}</div>
+                                <n-tag size="tiny" :type="String(task.status || '') === 'completed' ? 'success' : String(task.status || '') === 'failed' ? 'error' : 'default'">
+                                  {{ workflowStatusLabel(task.status) }}
+                                </n-tag>
+                              </div>
+                              <div class="text-[11px] opacity-70 mt-1 break-words">
+                                {{ task.summary_for_ui || task.task_goal || '等待执行' }}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div v-if="workflowAllTraces(workflowReplayRecord('job', jobsStore.currentJobId)?.workflow).length">
+                          <div class="text-xs opacity-70 mb-2">完整执行轨迹</div>
+                          <div class="space-y-2 max-h-72 overflow-auto pr-1">
+                            <div
+                              v-for="trace in workflowAllTraces(workflowReplayRecord('job', jobsStore.currentJobId)?.workflow)"
+                              :key="`job-${jobsStore.currentJobId}-${trace.task_id}-${trace.ts || ''}`"
+                              class="rounded-xl border border-slate-200/70 px-2 py-2"
+                            >
+                              <div class="text-xs font-medium">{{ workflowIdentifierLabel(trace.task_id) || '执行步骤' }}</div>
+                              <div class="text-[11px] opacity-70 mt-1 break-words">
+                                {{ trace.compressed_result?.key_result || trace.compressed_result?.what_was_done || workflowStatusLabel(trace.status) }}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div v-if="workflowAllErrors(workflowReplayRecord('job', jobsStore.currentJobId)?.workflow).length">
+                          <div class="text-xs opacity-70 mb-2">错误恢复</div>
+                          <div class="space-y-2 max-h-56 overflow-auto pr-1">
+                            <div
+                              v-for="row in workflowAllErrors(workflowReplayRecord('job', jobsStore.currentJobId)?.workflow)"
+                              :key="`job-${jobsStore.currentJobId}-${row.task_id || 'err'}-${row.ts || ''}`"
+                              class="rounded-xl border border-red-200/70 px-2 py-2"
+                            >
+                              <div class="text-xs font-medium">{{ workflowIdentifierLabel(row.task_id) || '系统错误' }}</div>
+                              <div class="text-[11px] opacity-80 break-words mt-1">{{ row.error_message || row.error_type || '未知错误' }}</div>
+                              <div v-if="row.recovery_action" class="text-[11px] opacity-70 mt-1">恢复：{{ row.recovery_action }}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </n-spin>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rail-section rail-section--plain">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                  <div class="text-xs opacity-70">任务/检索线程日志（最近）</div>
+                  <div class="flex items-center gap-2">
+                    <n-space v-if="isAdminUser" size="small">
+                      <n-button
+                        size="tiny"
+                        quaternary
+                        :type="sidebarLogViewMode === 'normal' ? 'primary' : 'default'"
+                        @click="setSidebarLogViewMode('normal')"
+                      >
+                        普通
+                      </n-button>
+                      <n-button
+                        size="tiny"
+                        quaternary
+                        :type="sidebarLogViewMode === 'detail' ? 'primary' : 'default'"
+                        @click="setSidebarLogViewMode('detail')"
+                      >
+                        详细
+                      </n-button>
+                    </n-space>
+                    <n-tag size="small" type="default">{{ currentSidebarLogs.length }}</n-tag>
+                  </div>
+                </div>
+                <div ref="sidebarLogRef" class="rail-subpanel p-2 max-h-[220px] overflow-auto">
+                  <div v-if="isSidebarDetailMode && sidebarDetailedLogsLoading" class="text-xs opacity-60 py-2">
+                    正在加载详细日志...
+                  </div>
+                  <template v-if="currentSidebarLogs.length">
+                    <div
+                      v-for="(log, idx) in currentSidebarLogs"
+                      :key="`${idx}-${log.ts || ''}`"
+                      class="py-1.5 border-b border-slate-200/50 dark:border-slate-700/40 last:border-b-0"
+                    >
+                      <div class="text-[11px] opacity-60">{{ log.ts || '--:--:--' }}</div>
+                      <div class="text-xs leading-5 whitespace-pre-wrap break-words">{{ log.message }}</div>
+                    </div>
+                  </template>
+                  <div v-else class="text-xs opacity-60 py-2">暂无日志，任务开始后会显示过程记录</div>
+                </div>
+              </div>
+
+              <div class="rail-section rail-section--plain">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                  <div class="text-xs opacity-70">Markdown 结果</div>
+                  <n-tag size="small" :type="isCurrentJobCompleted ? 'success' : 'default'">
+                    {{ isCurrentJobCompleted ? '可查看' : '未完成' }}
+                  </n-tag>
+                </div>
+
+                <n-space size="small" class="mb-2">
+                  <n-button
+                    size="small"
+                    @click="() => loadCurrentJobNoteAssets()"
+                    :disabled="!isCurrentJobCompleted || loadingCurrentJobNote"
+                    :loading="loadingCurrentJobNote"
+                  >
+                    加载 MD
+                  </n-button>
+                  <n-button
+                    size="small"
+                    tag="a"
+                    :href="currentNoteDownloadUrl || undefined"
+                    target="_blank"
+                    :disabled="!currentNoteDownloadUrl"
+                  >
+                    下载 MD
+                  </n-button>
+                </n-space>
+
+                <div v-if="currentNoteLink" class="text-[11px] opacity-60 mb-2 truncate" :title="currentNoteLink.file_name">
+                  {{ currentNoteLink.file_name }}
+                </div>
+
+                <div class="rail-subpanel p-2 max-h-[180px] overflow-auto">
+                  <template v-if="currentNoteText">
+                    <div class="text-[11px] opacity-60 mb-2">
+                      已加载完整 Markdown。任务完成后会自动以 AI 消息形式加入当前对话。
+                    </div>
+                    <div class="rail-md-preview" @contextmenu.prevent="handleRailMarkdownContextMenu($event)">
+                      <MarkdownContent :source="currentNoteText" />
+                    </div>
+                  </template>
+                  <div v-else class="text-xs opacity-60 py-2">
+                    {{ isCurrentJobCompleted ? '任务已完成，点击“加载 MD”查看内容。' : '任务完成后可在这里预览并下载 Markdown 笔记。' }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+          <n-empty v-else description="先在中间聊天；开启“知识检索”并发送后，才可能创建任务" />
+            </n-card>
+          </transition>
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="quoteContextMenu.visible"
+      ref="quoteContextMenuRef"
+      class="quote-context-menu"
+      :style="{
+        left: `${quoteContextMenu.x}px`,
+        top: `${quoteContextMenu.y}px`,
+      }"
+      @click.stop
+    >
+      <button type="button" class="quote-context-menu__item" @click="applyContextQuote">
+        引用到输入框
+      </button>
+    </div>
+    <div
+      v-if="imagePreview.visible"
+      class="image-preview-layer"
+      @click="closeImagePreview"
+    >
+      <button type="button" class="image-preview-layer__close" @click.stop="closeImagePreview">×</button>
+      <div class="image-preview-layer__body" @click.stop>
+        <img
+          :src="imagePreview.url"
+          :alt="imagePreview.label || '图片预览'"
+          class="image-preview-layer__img"
+        />
+        <div v-if="imagePreview.label" class="image-preview-layer__caption">
+          {{ imagePreview.label }}
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="candidateFullscreenPreview.visible"
+      class="video-preview-layer"
+      @click="closeCandidateFullscreen"
+    >
+      <button type="button" class="video-preview-layer__close" @click.stop="closeCandidateFullscreen">×</button>
+      <div class="video-preview-layer__body" @click.stop>
+        <div class="video-preview-layer__header">
+          <div class="video-preview-layer__title">
+            {{ candidateFullscreenPreview.title || '视频预览' }}
+          </div>
+          <button
+            v-if="candidateFullscreenPreview.pageUrl"
+            type="button"
+            class="video-preview-layer__link"
+            @click.stop="openCandidateFullscreenSource"
+          >
+            打开原视频
+          </button>
+        </div>
+        <video
+          v-if="candidateFullscreenPreview.playableUrl"
+          :src="candidateFullscreenPreview.playableUrl"
+          class="video-preview-layer__player"
+          controls
+          autoplay
+          playsinline
+          preload="auto"
+        />
+        <iframe
+          v-else-if="candidateFullscreenPreview.embedUrl"
+          :src="candidateFullscreenPreview.embedUrl"
+          class="video-preview-layer__player"
+          frameborder="0"
+          allow="autoplay; fullscreen"
+          allowfullscreen
+          scrolling="no"
+        />
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+/**
+ * 首页对话：流式聊天、知识检索与多源搜索模式、长任务与 SSE、
+ * Agent 工作流侧栏、候选视频 / playlist 选集与分集笔记、全局知识命中等。
+ * 单文件体量较大，逻辑按「类型 → 状态 → 计算属性 → 工具函数 → 生命周期 → watch」顺序阅读。
+ */
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { NButton, NCard, NDropdown, NEmpty, NIcon, NInput, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
+import { ArrowUpOutline, ChevronDownOutline, ChevronForwardOutline, Play, RefreshOutline, StopOutline } from '@vicons/ionicons5'
+import { useJobsStore } from '@/stores/modules/useJobsStore'
+import { useChatStore } from '@/stores/modules/useChatStore'
+import { useAuthStore } from '@/stores/modules/useAuthStore'
+import { useUserStore } from '@/stores/modules/useUserStore'
+import { useGlobalStore } from '@/stores/global-store'
+import {
+  getAgentWorkflowStateApi,
+  listActiveSearchTasksApi,
+  listChatMessagesApi,
+  listPlaylistEpisodeNotesApi,
+  resolvePlaylistSeriesApi,
+  saveChatPlaylistPreviewMessageApi,
+  saveChatJobNoteMessageApi,
+  savePlaylistEpisodeNoteApi,
+  selectChatCandidateVideoApi,
+  selectChatCandidateVideosBatchApi,
+  deleteChatImageApi,
+  sendChatMessageByAliQianwenApi,
+  stopChatMessageStreamApi,
+  uploadChatImageApi,
+} from '@/api/chat'
+import { buildJobNoteDownloadUrl, getAdminJobPushLogsApi, getJobNoteApi, getJobNoteLinkApi } from '@/api/jobs'
+import { buildApiUrl, getAuthToken } from '@/api/client'
+import type { AgentWorkflow, AgentWorkflowStateItem, ChatImageAttachment, ChatMessage, ChatQuoteReference, JobCreateResponse, PlaylistEpisodeNoteItem, PlaylistSeriesItem, PlaylistSeriesResolveResponse, TopicQueueBatchSummary, TopicSelectedVideo } from '@/api/types'
+import MarkdownContent from '@/components/MarkdownContent.vue'
+import {
+  ALI_DASHSCOPE_MODEL_GROUPS,
+  ALI_DASHSCOPE_MODEL_ID_SET,
+  DEFAULT_ALI_CHAT_MODEL,
+  findAliDashScopeModelLabel,
+} from '@/constants/aliDashScopeChatModels'
+
+/** 发送前图片项：在 ChatImageAttachment 上扩展本地预览、上传进度与重试所需字段。 */
+type UiComposerImage = ChatImageAttachment & {
+  localId?: string
+  previewUrl?: string
+  uploadStatus?: 'uploading' | 'uploaded' | 'failed'
+  uploadProgress?: number
+  errorMessage?: string
+  sourceFile?: File | null
+}
+
+/** 单条气泡消息：对齐服务端 ChatMessage 与前端流式/pending 状态及 meta 扩展。 */
+type UiChatMessage = {
+  localId: string
+  messageId?: number
+  role: 'user' | 'assistant'
+  content: string
+  images?: UiComposerImage[]
+  quote?: ChatQuoteReference | null
+  pending?: boolean
+  task?: JobCreateResponse | null
+  taskSnapshot?: Record<string, any> | null
+  toolDecisionReason?: string
+  autoTask?: boolean
+  knowledgeLookupUsed?: boolean
+  knowledgeLookupReason?: string
+  knowledgeHits?: Array<Record<string, any>>
+  renderAsMarkdown?: boolean
+  markdownLabel?: string
+  jobNoteJobId?: string
+  searchProgressLogs?: Array<{ ts?: string; message: string }>
+  searchFocusLine?: string
+  searchProgressVisible?: boolean
+  streaming?: boolean
+  preferMarkdown?: boolean
+  agentWorkflowStateKey?: string
+  agentWorkflow?: AgentWorkflow | null
+  playlistCard?: {
+    sourceTitle?: string
+    sourceUrl?: string
+    items: TopicSelectedVideo[]
+  } | null
+}
+
+/** playlist 侧栏 Tab：选集列表或笔记列表。 */
+type PlaylistPreviewTab = 'episodes' | 'notes'
+
+/** 分集笔记生成状态。 */
+type PlaylistPreviewNoteStatus = 'pending' | 'ready' | 'failed'
+
+/** 某分集对应的笔记缓存项（含 Markdown 与任务 id）。 */
+type PlaylistPreviewNoteItem = {
+  episodeKey: string
+  title: string
+  markdown: string
+  url: string
+  jobId?: string
+  fileName?: string
+  createdAt?: string
+  updatedAt?: string
+  status: PlaylistPreviewNoteStatus
+  errorMessage?: string
+}
+
+/** 子任务 job 与某条消息中某分集笔记的绑定，用于 watch 完成后回填。 */
+type PlaylistPreviewNoteJobBinding = {
+  messageLocalId: string
+  episodeKey: string
+  title: string
+  url: string
+}
+
+/** 学习路径中某一阶段在 UI 上的展示结构（标题、目标、推荐视频）。 */
+type WorkflowLearningPathSection = {
+  stepIndex: number
+  stageId: string
+  title: string
+  goal: string
+  why: string
+  practiceHint: string
+  items: TopicSelectedVideo[]
+}
+
+/** 解析后的合集面板：接口返回字段加上规范化后的分集 items。 */
+type WorkflowPlaylistSeriesPanel = PlaylistSeriesResolveResponse & {
+  items: TopicSelectedVideo[]
+}
+
+// --- 路由、消息 API、各业务 Store ---
+const router = useRouter()
+const route = useRoute()
+const message = useMessage()
+const jobsStore = useJobsStore()
+const chatStore = useChatStore()
+const authStore = useAuthStore()
+const userStore = useUserStore()
+const globalStore = useGlobalStore()
+
+/** localStorage 中保存所选聊天模型 model_name 的键名。 */
+const CHAT_MODEL_STORAGE_KEY = 'robot_web_selected_chat_model'
+
+// --- 输入区、消息列表、会话与发送状态 ---
+// 底部输入框文案（与 n-input 双向绑定）
+const userInput = ref('')
+// 待发送消息附带的引用块（Markdown 片段）
+const composerQuote = ref<ChatQuoteReference | null>(null)
+// 待发送图片列表（含上传进度与 object 信息）
+const composerImages = ref<UiComposerImage[]>([])
+// 输入框组件实例，用于 focus
+const composerInputRef = ref<any>(null)
+// 隐藏 file input，用于点击「上传图片」
+const composerImageInputRef = ref<HTMLInputElement | null>(null)
+// 引用右键菜单 DOM，用于点击外部关闭时 contains 判断
+const quoteContextMenuRef = ref<HTMLElement | null>(null)
+// 是否处于 IME 输入法组字中，避免 Enter 误发送
+const imeComposing = ref(false)
+// 当前会话消息列表（含流式 pending 占位）
+const messages = ref<UiChatMessage[]>([])
+// 是否正在等待流式回复结束
+const sending = ref(false)
+// 是否正在请求停止流式（防重复点击）
+const stoppingReply = ref(false)
+// 是否 macOS/iOS 类平台，用于粘贴快捷键文案 ⌘V / Ctrl+V
+const isMacLikePlatform = ref(false)
+// --- 知识检索总开关与检索源（network / bili / douyin）---
+// 是否开启「知识检索」模式（影响自动任务与检索模式）
+const knowledgeRetrievalEnabled = ref(false)
+// 检索模式：联网
+const retrievalModeNetwork = ref(true)
+// 检索模式：B 站
+const retrievalModeBili = ref(false)
+// 检索模式：抖音
+const retrievalModeDouyin = ref(false)
+// 当前聊天会话 UUID（路由 query.session 同步）
+const chatSessionUuid = ref('')
+// 当前选中的 model_name（DashScope 模型 id；通义直连见 mapModelNameToQwen）
+const selectedModel = ref<string | null>(DEFAULT_ALI_CHAT_MODEL)
+// 消息列表滚动容器，用于滚动到底与跟随
+const messagesContainerRef = ref<HTMLElement | null>(null)
+// 右侧 Agent 侧栏内日志区域，用于自动滚到底
+const sidebarLogRef = ref<HTMLElement | null>(null)
+// 当前是否处于助手流式输出阶段（与滚动跟随联动）
+const assistantReplyStreaming = ref(false)
+// 是否在流式输出时自动把列表滚到底部
+const autoFollowMessages = ref(false)
+// 已处理过的 route.query.newChat 令牌，避免重复新开会话
+const routeNewChatToken = ref<string>('')
+// 从路由加载历史会话消息时的 loading
+const loadingSessionMessages = ref(false)
+// 本地刚创建会话后跳过下一次 route hydrate，防止重复拉消息
+const skipNextRouteSessionHydrateUuid = ref('')
+// --- 候选视频内嵌预览、工作流/playlist 选集与笔记 ---
+// jobId -> 当前展开内嵌预览的 video 键（候选列表）
+const videoPreviewState = ref<Record<string, string>>({})
+// 全局「总结笔记」请求中：workflow 候选键或候选键 -> loading
+const selectingVideoState = ref<Record<string, boolean>>({})
+// workflow 父视频键 -> 已解析的合集面板数据
+const workflowPlaylistSeriesState = ref<Record<string, WorkflowPlaylistSeriesPanel | null>>({})
+// workflow 父视频键 -> 选集面板是否展开
+const workflowPlaylistSeriesOpenState = ref<Record<string, boolean>>({})
+// workflow 父视频键 -> 是否正在请求解析合集
+const workflowPlaylistSeriesLoadingState = ref<Record<string, boolean>>({})
+// workflow 父视频键 -> 合集解析错误信息
+const workflowPlaylistSeriesErrorState = ref<Record<string, string>>({})
+// workflow 父视频键 -> 当前选中的分集键
+const workflowPlaylistActiveEpisodeState = ref<Record<string, string>>({})
+// 消息 localId -> playlist 预览当前分集键
+const playlistPreviewActiveEpisodeState = ref<Record<string, string>>({})
+// 消息 localId -> playlist 侧栏是否打开
+const playlistPreviewSidebarOpenState = ref<Record<string, boolean>>({})
+// 消息 localId -> 选集列表 / 笔记列表 Tab
+const playlistPreviewTabState = ref<Record<string, PlaylistPreviewTab>>({})
+// 消息 localId -> 分集键 -> 是否勾选（批量总结）
+const playlistPreviewSelectionState = ref<Record<string, Record<string, boolean>>>({})
+// 消息 localId -> 各分集笔记缓存列表
+const playlistPreviewNotesState = ref<Record<string, PlaylistPreviewNoteItem[]>>({})
+// 消息 localId -> 当前正在查看的笔记 episodeKey
+const playlistPreviewViewingNoteState = ref<Record<string, string>>({})
+// 子任务 jobId -> 对应消息与分集绑定（用于 watch 回填笔记）
+const playlistPreviewNoteJobBindings = ref<Record<string, PlaylistPreviewNoteJobBinding>>({})
+// 子任务 jobId -> 是否正在拉取笔记正文
+const playlistPreviewNoteResolvingState = ref<Record<string, boolean>>({})
+// 消息 localId -> 是否正在批量触发分集总结
+const playlistPreviewBatchSummarizingState = ref<Record<string, boolean>>({})
+// jobId -> 候选视频键 -> 是否勾选「加入队列总结」
+const candidateSelectionState = ref<Record<string, Record<string, boolean>>>({})
+// jobId -> 是否正在提交批量选候选
+const batchSelectingJobs = ref<Record<string, boolean>>({})
+// jobId -> 候选列表当前页码
+const candidatePageState = ref<Record<string, number>>({})
+// scope:key -> 任务链回放面板是否展开
+const workflowReplayOpenState = ref<Record<string, boolean>>({})
+// scope:key -> 是否正在加载回放记录
+const workflowReplayLoadingState = ref<Record<string, boolean>>({})
+// scope:key -> 已缓存的 Agent 工作流状态快照
+const workflowReplayRecords = ref<Record<string, AgentWorkflowStateItem | null>>({})
+// 用户是否展开右侧 Agent 轨道（与 hasTaskRailContent 共同决定展示）
+const taskRailOpen = ref(false)
+// 是否已自动展开过轨道（首次有工作流时只自动一次）
+const taskRailAutoOpened = ref(false)
+// --- 右键引用、图片预览、视频全屏预览 ---
+// 消息气泡右键「引用到输入框」菜单的位置与内容
+const quoteContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  content: '',
+  label: '',
+})
+// 发送区/消息区图片点击后的全屏预览状态
+const imagePreview = ref({
+  visible: false,
+  url: '',
+  label: '',
+})
+// 候选视频全屏预览（直链或 iframe）状态
+const candidateFullscreenPreview = ref({
+  visible: false,
+  title: '',
+  playableUrl: '',
+  embedUrl: '',
+  pageUrl: '',
+})
+
+// --- 计算属性：当前任务快照、Agent 工作流、侧栏用笔记与队列 ---
+// 当前 jobsStore.currentJobId 对应的任务 UI 状态（含 snapshot、SSE、日志）
+const currentJobState = computed(() => (jobsStore.currentJobId ? jobsStore.jobs[jobsStore.currentJobId] : null))
+// 当前任务快照（阶段、结果、队列等）
+const currentSnapshot = computed(() => currentJobState.value?.snapshot || null)
+// 优先取任务上的 agentWorkflow，否则从快照/result 兜底
+const currentJobWorkflow = computed(() =>
+  (currentJobState.value?.agentWorkflow
+    || currentSnapshot.value?.agent_workflow
+    || ((currentSnapshot.value?.result as any)?.agent_workflow ?? null)
+    || null) as AgentWorkflow | null,
+)
+// 从最近一条助手消息上取带工作流计划的消息（无当前任务时侧栏用）
+const latestChatAgentWorkflow = computed(() => {
+  for (let idx = messages.value.length - 1; idx >= 0; idx -= 1) {
+    const msg = messages.value[idx]
+    if (!msg || msg.role !== 'assistant') continue
+    if (workflowHasPlan(msg.agentWorkflow)) return msg.agentWorkflow || null
+  }
+  return null
+})
+// 侧栏展示的 Agent 工作流：优先当前任务，否则最近聊天中的工作流
+const currentRailWorkflow = computed(() =>
+  workflowHasPlan(currentJobWorkflow.value)
+    ? currentJobWorkflow.value
+    : (workflowHasPlan(latestChatAgentWorkflow.value) ? latestChatAgentWorkflow.value : null),
+)
+// 是否存在仍在上传中的待发送图片
+const uploadingComposerImages = computed(() =>
+  composerImages.value.some((img) => img.uploadStatus === 'uploading'),
+)
+// 是否存在上传失败的图片（阻止发送）
+const hasFailedComposerImages = computed(() =>
+  composerImages.value.some((img) => img.uploadStatus === 'failed'),
+)
+// 用户消息气泡旁展示的名称
+const currentUserLabel = computed(() => authStore.user?.display_name || authStore.user?.username || '你')
+// 侧栏「加载 MD」是否请求中
+const loadingCurrentJobNote = ref(false)
+// jobId -> 是否正在把任务笔记同步成聊天消息（防重复）
+const syncingJobNoteMessageByJobId = ref<Record<string, boolean>>({})
+// 子任务 jobId -> 侧栏「加入对话」是否请求中
+const childNoteLoadingByJobId = ref<Record<string, boolean>>({})
+// 活跃搜索任务汇总后的日志行（用于侧栏与进度条）
+const activeSearchTaskLogs = ref<Array<{ ts?: string; message: string }>>([])
+// 侧栏日志视图：普通 / 详细（管理员）
+const sidebarLogViewMode = ref<'normal' | 'detail'>('normal')
+// 管理端详细日志是否加载中
+const sidebarDetailedLogsLoading = ref(false)
+// 管理端详细日志内容
+const sidebarDetailedLogs = ref<Array<{ ts?: string; message: string }>>([])
+// 当前流式请求的 client_request_id，用于停止
+const activeChatRequestId = ref('')
+// 通义流式 fetch 的 AbortController（与后端 reply-stop 二选一或同时存在）
+const replyStreamAbort = ref<AbortController | null>(null)
+// 会话 UUID -> 消息列表缓存（用于切换会话时快速恢复）
+const sessionMessageCache = ref<Record<string, UiChatMessage[]>>({})
+let electronChatStorageAvailable: boolean | null = null
+
+async function isElectronChatStorageEnabled() {
+  if (electronChatStorageAvailable !== null) return electronChatStorageAvailable
+  if (typeof window === 'undefined' || !window.electronAPI?.db?.isAvailable) {
+    electronChatStorageAvailable = false
+    return false
+  }
+  try {
+    electronChatStorageAvailable = await window.electronAPI.db.isAvailable()
+    return electronChatStorageAvailable
+  } catch {
+    electronChatStorageAvailable = false
+    return false
+  }
+}
+
+function buildStoredMessageMeta(msg: UiChatMessage) {
+  const meta: Record<string, unknown> = {}
+  if (Array.isArray(msg.images) && msg.images.length) {
+    meta.images = msg.images.map(({ localId, previewUrl, uploadStatus, uploadProgress, errorMessage, sourceFile, ...rest }) => rest)
+  }
+  if (msg.quote?.content) meta.quote = msg.quote
+  if (msg.autoTask) meta.auto_task = true
+  if (msg.task) meta.task = msg.task
+  if (msg.taskSnapshot) meta.task_snapshot = msg.taskSnapshot
+  if (msg.toolDecisionReason) meta.tool_decision = { reason: msg.toolDecisionReason }
+  if (msg.knowledgeLookupUsed || msg.knowledgeLookupReason) {
+    meta.knowledge_lookup = {
+      used: Boolean(msg.knowledgeLookupUsed),
+      reason: String(msg.knowledgeLookupReason || ''),
+    }
+  }
+  if (Array.isArray(msg.knowledgeHits) && msg.knowledgeHits.length) meta.knowledge_hits = msg.knowledgeHits
+  if (msg.agentWorkflowStateKey) meta.agent_workflow_state_key = msg.agentWorkflowStateKey
+  if (msg.agentWorkflow) meta.agent_workflow = msg.agentWorkflow
+  if (msg.playlistCard) meta.playlist_preview = msg.playlistCard
+  if (msg.renderAsMarkdown) meta.render_markdown = true
+  if (msg.preferMarkdown) meta.prefer_markdown = true
+  if (msg.markdownLabel) {
+    meta.markdown_label = msg.markdownLabel
+    if (!meta.message_kind) meta.message_kind = 'job_markdown'
+  }
+  if (msg.jobNoteJobId || msg.markdownLabel) {
+    const guessedFileName = String(msg.markdownLabel || '').includes('·')
+      ? String(msg.markdownLabel || '').split('·').slice(-1)[0].trim()
+      : ''
+    meta.job_note = {
+      job_id: String(msg.jobNoteJobId || '').trim() || undefined,
+      file_name: guessedFileName || undefined,
+    }
+  }
+  if (msg.searchFocusLine || (msg.searchProgressLogs || []).length) {
+    meta.search_dispatch = {
+      focus_line: msg.searchFocusLine,
+      logs: Array.isArray(msg.searchProgressLogs) ? msg.searchProgressLogs : [],
+    }
+  }
+  meta.local_ui = {
+    markdown_label: msg.markdownLabel || '',
+    job_note_job_id: msg.jobNoteJobId || '',
+    search_focus_line: msg.searchFocusLine || '',
+    search_progress_logs: Array.isArray(msg.searchProgressLogs) ? msg.searchProgressLogs : [],
+    search_progress_visible: Boolean(msg.searchProgressVisible),
+    streaming: Boolean(msg.streaming),
+    prefer_markdown: Boolean(msg.preferMarkdown),
+    task_snapshot: msg.taskSnapshot || null,
+    tool_decision_reason: msg.toolDecisionReason || '',
+    playlist_card: msg.playlistCard || null,
+    agent_workflow_state_key: msg.agentWorkflowStateKey || '',
+    agent_workflow: msg.agentWorkflow || null,
+  }
+  return meta
+}
+
+async function upsertLocalChatSession(sessionUuid: string, title: string, lastMessageAt?: string | null) {
+  if (!await isElectronChatStorageEnabled()) return
+  try {
+    await window.electronAPI.db.upsertChatSession({
+      sessionUuid,
+      title,
+      lastMessageAt: lastMessageAt ?? null,
+      updatedAt: new Date().toISOString(),
+    })
+  } catch {
+    // ignore local storage failures to avoid blocking chat flow
+  }
+}
+
+async function saveLocalChatMessage(sessionUuid: string, msg: UiChatMessage) {
+  if (!await isElectronChatStorageEnabled()) return
+  try {
+    await window.electronAPI.db.saveChatMessage({
+      sessionUuid,
+      role: msg.role,
+      content: String(msg.content || ''),
+      meta: buildStoredMessageMeta(msg),
+      createdAt: new Date().toISOString(),
+    })
+  } catch {
+    // ignore local storage failures to avoid blocking chat flow
+  }
+}
+
+async function syncLocalSessionSnapshot(sessionUuid: string, title = '') {
+  if (!await isElectronChatStorageEnabled()) return
+  const sid = String(sessionUuid || '').trim()
+  if (!sid) return
+  try {
+    const items = messages.value.map((msg) => ({
+      role: msg.role,
+      content: String(msg.content || ''),
+      meta: buildStoredMessageMeta(msg),
+      createdAt: new Date().toISOString(),
+    }))
+    await window.electronAPI.db.replaceChatSessionMessages({
+      sessionUuid: sid,
+      title: String(title || '').trim(),
+      items,
+    })
+  } catch {
+    // ignore local storage failures to avoid blocking chat flow
+  }
+}
+
+async function listSessionMessages(sessionUuid: string, limit = 100): Promise<ChatMessage[]> {
+  if (await isElectronChatStorageEnabled()) {
+    const items = await window.electronAPI.db.listChatMessages(sessionUuid, limit)
+    return (items || []).map((row) => ({
+      id: typeof row?.id === 'number' ? row.id : undefined,
+      role: String(row?.role || 'assistant'),
+      content: String(row?.content || ''),
+      meta: (row?.meta || {}) as Record<string, unknown>,
+      created_at: String(row?.created_at || ''),
+    })) as ChatMessage[]
+  }
+  const res = await listChatMessagesApi(sessionUuid, limit)
+  return Array.isArray(res?.items) ? res.items : []
+}
+// 搜索任务日志轮询定时器 id
+let searchTaskPollTimer: number | null = null
+// requestAnimationFrame id，合并消息区滚动到底
+let messagesScrollFrame: number | null = null
+// 上次窗口聚焦触发的任务同步时间戳（节流）
+let lastResumeSyncAt = 0
+// 搜索日志轮询连续失败次数
+let searchTaskPollFailureCount = 0
+// 轮询失败后暂停至该时间戳再恢复
+let searchTaskPollPausedUntil = 0
+
+// 搜索任务日志轮询间隔（毫秒）
+const SEARCH_TASK_POLL_INTERVAL_MS = 8000
+// 连续失败多少次后暂停轮询
+const SEARCH_TASK_POLL_MAX_FAILURES = 3
+// 轮询暂停时长（毫秒）
+const SEARCH_TASK_POLL_PAUSE_MS = 60_000
+
+// --- 任务 SSE 状态文案（侧栏快捷操作区）---
+const currentSseButtonText = computed(() => {
+  const s = currentJobState.value?.sseStatus
+  return s === 'connected' ? '暂停实时连接' : '开启实时连接'
+})
+
+const currentSseLabel = computed(() => {
+  const s = currentJobState.value?.sseStatus || 'idle'
+  if (s === 'connected') return '已连接'
+  if (s === 'connecting') return '连接中'
+  if (s === 'disconnected') return '已断开'
+  return '未开启'
+})
+
+const currentSseColorClass = computed(() => {
+  const s = currentJobState.value?.sseStatus || 'idle'
+  if (s === 'connected') return 'text-green-500 font-medium'
+  if (s === 'connecting') return 'text-blue-500 font-medium'
+  if (s === 'disconnected') return 'text-red-500 font-medium'
+  return 'opacity-70'
+})
+
+const modelDropdownOptions = computed(() =>
+  ALI_DASHSCOPE_MODEL_GROUPS.map((g, gi) => ({
+    type: 'group' as const,
+    label: g.label,
+    key: `dashscope-group-${gi}`,
+    children: g.models.map((m) => ({
+      label: m.label,
+      key: m.value,
+    })),
+  })),
+)
+
+/** Popover 内容区：限制最大高度，超出由内部 NScrollbar 滚动（与 scrollable 配合） */
+const modelDropdownPopoverContentStyle = {
+  maxHeight: 'min(400px, 65vh)',
+  overflow: 'hidden',
+  minHeight: 0,
+}
+
+/** 菜单根节点继承 max-height，保证滚动条区域有明确上限 */
+function modelDropdownMenuProps() {
+  return {
+    style: 'max-height:min(400px, 65vh);overflow:hidden;min-height:0;',
+  }
+}
+
+const selectedModelDisplayName = computed(() => {
+  if (!selectedModel.value) return DEFAULT_ALI_CHAT_MODEL
+  return findAliDashScopeModelLabel(selectedModel.value) || selectedModel.value
+})
+
+const hasTaskRailContent = computed(() => workflowHasPlan(currentRailWorkflow.value))
+const showTaskRail = computed(() => taskRailOpen.value && hasTaskRailContent.value)
+const pasteShortcutLabel = computed(() => (isMacLikePlatform.value ? '⌘V' : 'Ctrl+V'))
+
+const selectedSearchModes = computed(() => {
+  const modes: string[] = []
+  if (retrievalModeNetwork.value) modes.push('network')
+  if (retrievalModeBili.value) modes.push('bili')
+  if (retrievalModeDouyin.value) modes.push('douyin')
+  return modes
+})
+
+const isAdminUser = computed(() => String(authStore.user?.role || '') === 'admin')
+const isSidebarDetailMode = computed(
+  () => isAdminUser.value && sidebarLogViewMode.value === 'detail',
+)
+
+const currentSidebarLogs = computed(() => {
+  if (isSidebarDetailMode.value) {
+    return [...sidebarDetailedLogs.value].slice(-80)
+  }
+  const jobLogs = (currentJobState.value?.logs || []).slice(-40).map((x) => ({
+    ts: x.ts,
+    message: humanizeSidebarLog(x.message || ''),
+  }))
+  const taskLogs = (activeSearchTaskLogs.value || []).slice(-80).map((x) => ({
+    ts: x.ts,
+    message: humanizeSidebarLog(x.message || ''),
+  }))
+  return [...jobLogs, ...taskLogs]
+    .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')))
+    .slice(-80)
+})
+
+const isCurrentJobCompleted = computed(() => currentSnapshot.value?.status === 'completed')
+const currentNoteText = computed(() => currentJobState.value?.noteText || '')
+const currentNoteLink = computed(() => currentJobState.value?.noteLink || null)
+const currentNoteDownloadUrl = computed(() => {
+  if (!jobsStore.currentJobId || !currentNoteLink.value) return ''
+  return buildJobNoteDownloadUrl(jobsStore.currentJobId)
+})
+const currentQueueRuntime = computed(() => ((currentSnapshot.value?.result as any)?.queue_runtime || null) as Record<string, any> | null)
+const currentQueueBatch = computed(() => ((currentSnapshot.value?.result as any)?.queue_batch || null) as TopicQueueBatchSummary | null)
+const currentQueueBatchCompletedItems = computed(() => Array.isArray(currentQueueBatch.value?.completed_items) ? currentQueueBatch.value!.completed_items! : [])
+const firstTaskMessageLocalIdByJob = computed(() => {
+  const m: Record<string, string> = {}
+  for (const msg of messages.value) {
+    const jobId = String(msg?.task?.job_id || '').trim()
+    if (!jobId || msg.role !== 'assistant') continue
+    if (!m[jobId]) m[jobId] = msg.localId
+  }
+  return m
+})
+const taskSnapshotByJob = computed(() => {
+  const out: Record<string, Record<string, any>> = {}
+  for (const msg of messages.value) {
+    const jobId = String(msg?.task?.job_id || '').trim()
+    if (!jobId) continue
+    const snap = msg.taskSnapshot
+    if (snap && typeof snap === 'object') out[jobId] = snap
+  }
+  return out
+})
+
+// ========== 工具函数：Agent 工作流（解析、推荐资源、回放缓存）==========
+
+/**
+ * 将 Agent 工作流状态码转为界面展示文案。
+ */
+function workflowStatusLabel(status?: string) {
+  const s = String(status || '').trim().toLowerCase()
+  if (s === 'completed') return '已完成'
+  if (s === 'running') return '进行中'
+  if (s === 'failed') return '失败'
+  if (s === 'degraded') return '降级'
+  if (s === 'retrying') return '重试中'
+  if (s === 'blocked') return '阻塞'
+  if (s === 'skipped') return '已跳过'
+  return '待执行'
+}
+
+const WORKFLOW_IDENTIFIER_LABELS: Record<string, string> = {
+  T_ANALYZE_INTENT: '识别用户意图',
+  T_BUILD_PLAN: '生成任务计划',
+  T_CREATE_LONG_TASK: '创建长任务',
+  T_SEARCH_NETWORK: '联网检索',
+  T_SEARCH_BILI: '检索 B站资源',
+  T_SEARCH_DOUYIN: '检索抖音资源',
+  T_GROUP_RESOURCES: '整理推荐资源',
+  T_FINALIZE_OUTPUT: '生成最终输出',
+  T_BUILD_LEARNING_PATH: '构建学习路径',
+  T_SEARCH_STAGE_RESOURCES_BILI: '分阶段检索 B站资源',
+  T_SEARCH_STAGE_RESOURCES_NETWORK: '分阶段联网检索',
+  T_CLARIFY_REQUIREMENTS: '澄清关键信息',
+  T_PREPARE_MEDIA: '准备媒体素材',
+  T_SPLIT_AUDIO: '拆分音频',
+  T_ASR_PIPELINE: '语音转写',
+  T_NOTE_PIPELINE: '生成笔记',
+  T_FINAL_MERGE: '合并最终结果',
+  AWAITING_CLARIFICATION: '等待澄清信息',
+  FINALIZE_OUTPUT: '生成最终输出',
+  JOB_STARTED: '任务已启动',
+  BUILD_LEARNING_PATH: '构建学习路径',
+  GROUP_RESOURCES: '整理推荐资源',
+  COMPLETED: '已完成',
+  RUNNING: '进行中',
+  FAILED: '失败',
+  RETRYING: '重试中',
+  BLOCKED: '阻塞',
+  DEGRADED: '降级执行',
+  PENDING: '待执行',
+}
+
+/**
+ * 判断字符串是否包含中日韩统一表意文字。
+ */
+function hasChineseText(text?: string) {
+  return /[\u3400-\u9fff]/.test(String(text || ''))
+}
+
+/**
+ * 将任务/步骤标识符（含 ASR/NOTE 等分段）转为可读中文标签。
+ */
+function workflowIdentifierLabel(identifier?: string) {
+  const raw = String(identifier || '').trim()
+  if (!raw) return ''
+  if (hasChineseText(raw)) return raw
+  const normalized = raw.toUpperCase()
+  if (WORKFLOW_IDENTIFIER_LABELS[normalized]) return WORKFLOW_IDENTIFIER_LABELS[normalized]
+
+  let match = normalized.match(/^ASR_CHUNK_(\d+)$/)
+  if (match?.[1]) return `第 ${Number(match[1])} 段语音转写`
+  match = normalized.match(/^TERM_FIX_CHUNK_(\d+)$/)
+  if (match?.[1]) return `第 ${Number(match[1])} 段术语修正`
+  match = normalized.match(/^VISION_DECIDE_CHUNK_(\d+)$/)
+  if (match?.[1]) return `第 ${Number(match[1])} 段画面判断`
+  match = normalized.match(/^NOTE_CHUNK_(\d+)$/)
+  if (match?.[1]) return `第 ${Number(match[1])} 段笔记生成`
+  match = normalized.match(/^MERGE_CONTIGUOUS_(\d+)_(\d+)$/)
+  if (match?.[1] && match?.[2]) return `合并第 ${Number(match[1])}-${Number(match[2])} 段结果`
+
+  if (/^T_[A-Z0-9_]+$/.test(normalized)) return '任务步骤'
+  if (/^[A-Z0-9_]+$/.test(normalized)) return '执行步骤'
+  return raw
+}
+
+/**
+ * 解析任务节点，返回用于 UI 展示的任务名称。
+ */
+function workflowTaskDisplayName(task?: { task_name?: string; task_id?: string } | null) {
+  const taskName = String(task?.task_name || '').trim()
+  if (hasChineseText(taskName)) return taskName
+  const mappedName = workflowIdentifierLabel(taskName)
+  if (mappedName && mappedName !== '执行步骤' && mappedName !== '任务步骤') return mappedName
+  return workflowIdentifierLabel(task?.task_id) || '任务步骤'
+}
+
+/**
+ * 判断工作流是否已有可展示的计划（任务图、轨迹或主计划信息）。
+ */
+function workflowHasPlan(workflow?: AgentWorkflow | null) {
+  if (!workflow || typeof workflow !== 'object') return false
+  const taskCount = Array.isArray(workflow.task_graph) ? workflow.task_graph.filter(Boolean).length : 0
+  if (taskCount > 0) return true
+  const traceCount = Array.isArray(workflow.execution_trace) ? workflow.execution_trace.filter(Boolean).length : 0
+  if (traceCount > 0) return true
+  if (String(workflow.master_plan?.current_stage || '').trim()) return true
+  if (String(workflow.master_decision?.decision || workflow.master_decision?.reason || '').trim()) return true
+  return false
+}
+
+/**
+ * 首次检测到有效工作流时自动展开右侧 Agent 轨道。
+ */
+function maybeAutoOpenTaskRail(workflow?: AgentWorkflow | null) {
+  if (taskRailAutoOpened.value) return
+  if (!workflowHasPlan(workflow)) return
+  taskRailOpen.value = true
+  taskRailAutoOpened.value = true
+}
+
+/**
+ * 取任务图中前若干条用于侧栏预览。
+ */
+function workflowTaskPreview(workflow?: AgentWorkflow | null) {
+  const rows = Array.isArray(workflow?.task_graph) ? workflow!.task_graph! : []
+  return rows.slice(0, 8)
+}
+
+/**
+ * 取最近若干条执行轨迹（倒序）用于侧栏。
+ */
+function workflowRecentTrace(workflow?: AgentWorkflow | null) {
+  const rows = Array.isArray(workflow?.execution_trace) ? workflow!.execution_trace! : []
+  return rows.slice(-5).reverse()
+}
+
+/**
+ * 取最近若干条错误处理记录用于侧栏。
+ */
+function workflowErrorPreview(workflow?: AgentWorkflow | null) {
+  const rows = Array.isArray(workflow?.error_handling) ? workflow!.error_handling! : []
+  return rows.slice(-3).reverse()
+}
+
+/**
+ * 将后端资源对象规范为 TopicSelectedVideo 结构。
+ */
+function workflowResourceToVideo(item: Record<string, any>): TopicSelectedVideo | null {
+  if (!item || typeof item !== 'object') return null
+  const title = String(item.resource_title || item.title || '').trim()
+  const url = String(item.page_url || item.url || '').trim()
+  if (!title && !url) return null
+  return {
+    title,
+    url: String(item.url || item.page_url || '').trim(),
+    page_url: String(item.page_url || item.url || '').trim(),
+    play_url: String(item.play_url || '').trim(),
+    cover: String(item.cover || item.pic || item.thumbnail || '').trim(),
+    up: String(item.up || '').trim(),
+    duration: String(item.duration || '').trim(),
+    stats: String(item.stats || '').trim(),
+    platform: String(item.platform || '').trim(),
+    learning_stage: String(item.learning_stage || '').trim(),
+    recommended_reason: String(item.recommended_reason || '').trim(),
+    resource_group_type: String(item.resource_group_type || '').trim(),
+    resource_type: String(item.resource_type || '').trim(),
+    recommended_priority: Number(item.recommended_priority || 0) || 0,
+    is_playlist: Boolean(item.is_playlist),
+  } as TopicSelectedVideo
+}
+
+/**
+ * 归一化学习阶段标题（去「第N步」前缀、空白等）便于匹配。
+ */
+function normalizeWorkflowStageLabel(raw: unknown) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  return text
+    .replace(/^第\s*[0-9一二三四五六七八九十百千两]+步\s*[：:]\s*/u, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+}
+
+/**
+ * 从分阶段检索类任务的执行轨迹中抽取候选视频列表。
+ */
+function workflowTraceStageVideos(workflow?: AgentWorkflow | null) {
+  const traces = Array.isArray(workflow?.execution_trace) ? workflow.execution_trace : []
+  const out: TopicSelectedVideo[] = []
+  const seen = new Set<string>()
+  for (const trace of traces) {
+    if (!trace || typeof trace !== 'object') continue
+    const taskId = String((trace as any).task_id || '').trim()
+    if (!taskId.includes('SEARCH_STAGE_RESOURCES')) continue
+    const rawResult = (trace as any).raw_result
+    const results = Array.isArray(rawResult?.results) ? rawResult.results : []
+    for (const result of results) {
+      if (!result || typeof result !== 'object') continue
+      const learningStage = String((result as any).learning_stage || '').trim()
+      const platform = String((result as any).mode || '').trim().toLowerCase()
+      const candidates = Array.isArray((result as any).candidates) ? (result as any).candidates : []
+      for (const row of candidates) {
+        if (!row || typeof row !== 'object') continue
+        const video = workflowResourceToVideo({
+          ...row,
+          learning_stage: String((row as any).learning_stage || learningStage || '').trim(),
+          platform: String((row as any).platform || platform || '').trim(),
+          page_url: String((row as any).page_url || (row as any).url || '').trim(),
+          url: String((row as any).url || (row as any).page_url || '').trim(),
+          play_url: String((row as any).play_url || '').trim(),
+          cover: String((row as any).cover || (row as any).pic || (row as any).thumbnail || '').trim(),
+          resource_type: String((row as any).resource_type || 'video').trim(),
+        })
+        if (!video) continue
+        const key = [
+          String((video as any).page_url || video.url || video.title || '').trim().toLowerCase(),
+          normalizeWorkflowStageLabel((video as any).learning_stage),
+        ].join('@@')
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        out.push(video)
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * 合并多组阶段视频并去重、排序。
+ */
+function mergeWorkflowStageVideos(...groups: TopicSelectedVideo[][]) {
+  const out: TopicSelectedVideo[] = []
+  const seen = new Set<string>()
+  for (const rows of groups) {
+    for (const video of rows || []) {
+      if (!video || typeof video !== 'object') continue
+      const key = [
+        String((video as any).page_url || video.url || video.title || '').trim().toLowerCase(),
+        normalizeWorkflowStageLabel((video as any).learning_stage),
+      ].join('@@')
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(video)
+    }
+  }
+  return out.sort((a, b) => {
+    const ga = workflowResourceGroupType(a)
+    const gb = workflowResourceGroupType(b)
+    const order = { playlist: 1, course: 2, single_video: 3 } as Record<string, number>
+    if (ga !== gb) return (order[ga] || 99) - (order[gb] || 99)
+    const pa = Number((a as any).recommended_priority || 999)
+    const pb = Number((b as any).recommended_priority || 999)
+    if (pa !== pb) return pa - pb
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN')
+  })
+}
+
+/**
+ * 从 final_output.attachments 中解析 learning_path 附件对象。
+ */
+function workflowLearningPath(workflow?: AgentWorkflow | null) {
+  const attachments = Array.isArray(workflow?.final_output?.attachments) ? workflow!.final_output!.attachments! : []
+  for (const row of attachments) {
+    if (!row || typeof row !== 'object') continue
+    if (String((row as any).kind || '').trim() !== 'learning_path') continue
+    const value = (row as any).value
+    if (value && typeof value === 'object') return value as Record<string, any>
+  }
+  return null
+}
+
+/**
+ * 汇总 resource_recommendations 中playlist/single/course 并去重排序。
+ */
+function workflowAllResourceVideos(workflow?: AgentWorkflow | null) {
+  const grouped = workflow?.resource_recommendations || {}
+  const out: TopicSelectedVideo[] = []
+  const seen = new Set<string>()
+  const appendRows = (rows: unknown[]) => {
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const v = workflowResourceToVideo(row as Record<string, any>)
+      if (!v) continue
+      const key = [
+        String((v as any).page_url || v.url || v.title || '').trim().toLowerCase(),
+        String((v as any).learning_stage || '').trim().toLowerCase(),
+        String((v as any).resource_group_type || '').trim().toLowerCase(),
+      ].join('@@')
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(v)
+    }
+  }
+  appendRows(Array.isArray((grouped as any).playlists) ? (grouped as any).playlists : [])
+  appendRows(Array.isArray((grouped as any).single_videos) ? (grouped as any).single_videos : [])
+  appendRows(Array.isArray((grouped as any).courses) ? (grouped as any).courses : [])
+  return out.sort((a, b) => {
+    const pa = Number((a as any).recommended_priority || 999)
+    const pb = Number((b as any).recommended_priority || 999)
+    if (pa !== pb) return pa - pb
+    const ga = workflowResourceGroupType(a)
+    const gb = workflowResourceGroupType(b)
+    if (ga !== gb) {
+      const order = { playlist: 1, course: 2, single_video: 3 } as Record<string, number>
+      return (order[ga] || 99) - (order[gb] || 99)
+    }
+    return String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN')
+  })
+}
+
+/**
+ * 按学习路径阶段组装每步标题、目标与关联视频。
+ */
+function workflowLearningPathSections(workflow?: AgentWorkflow | null): WorkflowLearningPathSection[] {
+  const learningPath = workflowLearningPath(workflow)
+  const stages = Array.isArray(learningPath?.stages) ? learningPath!.stages : []
+  if (!stages.length) return []
+  const videos = workflowAllResourceVideos(workflow)
+  const traceVideos = workflowTraceStageVideos(workflow)
+  const out: WorkflowLearningPathSection[] = []
+  for (const [idx, stage] of stages.entries()) {
+    if (!stage || typeof stage !== 'object') continue
+    const title = String((stage as any).title || '').trim()
+    if (!title) continue
+    const normalizedTitle = normalizeWorkflowStageLabel(title)
+    const stageTraceVideos = traceVideos.filter(
+      (video) => normalizeWorkflowStageLabel((video as any).learning_stage) === normalizedTitle,
+    )
+    const stageResourceVideos = videos.filter(
+      (video) => normalizeWorkflowStageLabel((video as any).learning_stage) === normalizedTitle,
+    )
+    const items = mergeWorkflowStageVideos(stageTraceVideos, stageResourceVideos).slice(0, 6)
+    out.push({
+        stepIndex: idx + 1,
+        stageId: String((stage as any).stage_id || `LP${idx + 1}`).trim(),
+        title,
+        goal: String((stage as any).goal || '').trim(),
+        why: String((stage as any).why || '').trim(),
+        practiceHint: String((stage as any).practice_hint || '').trim(),
+        items,
+      })
+  }
+  return out
+}
+
+/**
+ * 判断助手消息是否可渲染正文（非 pending/streaming 且有内容）。
+ */
+function canRenderWorkflowMessageContent(msg?: UiChatMessage | null) {
+  if (!msg || msg.role !== 'assistant') return false
+  if (msg.pending || msg.streaming) return false
+  return Boolean(String(msg.content || '').trim())
+}
+
+/**
+ * 从单条消息的工作流元数据得到学习路径分区数据。
+ */
+function messageWorkflowLearningPathSections(msg?: UiChatMessage | null) {
+  if (!canRenderWorkflowMessageContent(msg)) return [] as WorkflowLearningPathSection[]
+  return workflowLearningPathSections(msg?.agentWorkflow)
+}
+
+/**
+ * 是否应在气泡下展示「按学习步骤推荐」区块。
+ */
+function shouldRenderWorkflowLearningPathSections(msg?: UiChatMessage | null) {
+  return messageWorkflowLearningPathSections(msg).length > 0
+}
+
+/**
+ * 是否应展示「推荐资源」卡片组。
+ */
+function shouldRenderWorkflowResourceCards(msg?: UiChatMessage | null) {
+  if (!canRenderWorkflowMessageContent(msg)) return false
+  return workflowResourceCardGroups(msg?.agentWorkflow).length > 0
+}
+
+/**
+ * 学习路径已展示之外的补充单视频/课程分组。
+ */
+function workflowSupplementalResourceCardGroups(workflow?: AgentWorkflow | null) {
+  const sections = workflowLearningPathSections(workflow)
+  const used = new Set<string>()
+  for (const section of sections) {
+    for (const item of Array.isArray(section.items) ? section.items : []) {
+      const key = [
+        String((item as any).page_url || item.url || item.title || '').trim().toLowerCase(),
+        String((item as any).learning_stage || '').trim().toLowerCase(),
+        String((item as any).resource_group_type || '').trim().toLowerCase(),
+      ].join('@@')
+      if (key) used.add(key)
+    }
+  }
+  const extras = workflowAllResourceVideos(workflow).filter((video) => {
+    const key = [
+      String((video as any).page_url || video.url || video.title || '').trim().toLowerCase(),
+      String((video as any).learning_stage || '').trim().toLowerCase(),
+      String((video as any).resource_group_type || '').trim().toLowerCase(),
+    ].join('@@')
+    return key && !used.has(key)
+  })
+  const grouped = {
+    single_videos: extras.filter((video) => workflowResourceGroupType(video) === 'single_video'),
+    courses: extras.filter((video) => workflowResourceGroupType(video) === 'course'),
+  }
+  return [
+    { label: '补充单视频', items: grouped.single_videos.slice(0, 6) },
+    { label: '补充课程专题', items: grouped.courses.slice(0, 4) },
+  ].filter((row) => row.items.length)
+}
+
+/**
+ * 将 resource_recommendations 转为按标签分组的视频列表。
+ */
+function workflowResourceCardGroups(workflow?: AgentWorkflow | null) {
+  const grouped = workflow?.resource_recommendations || {}
+  const toVideos = (rows: unknown[]) => {
+    const out: TopicSelectedVideo[] = []
+    const seen = new Set<string>()
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const v = workflowResourceToVideo(row as Record<string, any>)
+      if (!v) continue
+      const key = [
+        String((v as any).page_url || v.url || v.title || '').trim().toLowerCase(),
+        String((v as any).learning_stage || '').trim().toLowerCase(),
+      ].join('@@')
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(v)
+    }
+    return out
+  }
+  return [
+    { label: '推荐视频合集', items: toVideos(Array.isArray((grouped as any).playlists) ? (grouped as any).playlists : []).slice(0, 4) },
+    { label: '推荐单视频', items: toVideos(Array.isArray((grouped as any).single_videos) ? (grouped as any).single_videos : []).slice(0, 6) },
+    { label: '推荐课程专题', items: toVideos(Array.isArray((grouped as any).courses) ? (grouped as any).courses : []).slice(0, 4) },
+  ].filter((row) => row.items.length)
+}
+
+/**
+ * 读取主决策说明或理由文案。
+ */
+function workflowDecisionText(workflow?: AgentWorkflow | null) {
+  const d = workflow?.master_decision || {}
+  return String(d.reason || d.decision || '').trim()
+}
+
+/**
+ * 当前主计划阶段的人类可读标签。
+ */
+function workflowCurrentStage(workflow?: AgentWorkflow | null) {
+  return workflowIdentifierLabel(workflow?.master_plan?.current_stage) || ''
+}
+
+/**
+ * 返回完整任务图数组。
+ */
+function workflowAllTasks(workflow?: AgentWorkflow | null) {
+  return Array.isArray(workflow?.task_graph) ? workflow!.task_graph! : []
+}
+
+/**
+ * 返回完整执行轨迹数组。
+ */
+function workflowAllTraces(workflow?: AgentWorkflow | null) {
+  return Array.isArray(workflow?.execution_trace) ? workflow!.execution_trace! : []
+}
+
+/**
+ * 返回完整错误处理数组。
+ */
+function workflowAllErrors(workflow?: AgentWorkflow | null) {
+  return Array.isArray(workflow?.error_handling) ? workflow!.error_handling! : []
+}
+
+/**
+ * 拼接 chat/job 与 stateKey 的缓存键。
+ */
+function workflowReplayCacheKey(scope: string, stateKey: string) {
+  return `${String(scope || '').trim()}:${String(stateKey || '').trim()}`
+}
+
+/**
+ * 读取已缓存的任务链回放记录。
+ */
+function workflowReplayRecord(scope: string, stateKey: string) {
+  return workflowReplayRecords.value[workflowReplayCacheKey(scope, stateKey)] || null
+}
+
+/**
+ * 某 scope+key 的回放面板是否展开。
+ */
+function workflowReplayOpen(scope: string, stateKey: string) {
+  return Boolean(workflowReplayOpenState.value[workflowReplayCacheKey(scope, stateKey)])
+}
+
+/**
+ * 某 scope+key 是否正在拉取回放数据。
+ */
+function workflowReplayLoading(scope: string, stateKey: string) {
+  return Boolean(workflowReplayLoadingState.value[workflowReplayCacheKey(scope, stateKey)])
+}
+
+/**
+ * 从回放记录的 artifacts 生成侧栏摘要键值对。
+ */
+function workflowReplayArtifactsPreview(record?: AgentWorkflowStateItem | null) {
+  const artifacts = (record?.artifacts || {}) as Record<string, any>
+  const rows: Array<{ label: string; value: string }> = []
+  const searchQuerySeed = String(artifacts?.search_query_seed || '').trim()
+  if (searchQuerySeed) rows.push({ label: '检索种子', value: searchQuerySeed })
+  const dispatchCount = Number(artifacts?.dispatch_result_count || 0)
+  if (dispatchCount > 0) rows.push({ label: '结果数', value: String(dispatchCount) })
+  const progressEvents = Array.isArray(artifacts?.progress_events) ? artifacts.progress_events.length : 0
+  if (progressEvents > 0) rows.push({ label: '进度事件', value: String(progressEvents) })
+  const learningPath = artifacts?.learning_path as Record<string, any> | undefined
+  if (learningPath && Array.isArray(learningPath?.stages) && learningPath.stages.length) {
+    rows.push({ label: '学习阶段', value: String(learningPath.stages.length) })
+  }
+  const assistantPreview = String(artifacts?.assistant_text_preview || '').trim()
+  if (assistantPreview) rows.push({ label: '答复预览', value: assistantPreview })
+  return rows
+}
+
+/**
+ * 按需请求后端拉取 Agent 工作流状态并写入缓存。
+ */
+async function ensureWorkflowReplay(scope: 'chat' | 'job', stateKey: string) {
+  const normalizedScope = String(scope || '').trim() as 'chat' | 'job'
+  const normalizedKey = String(stateKey || '').trim()
+  if (!normalizedScope || !normalizedKey) return null
+  const cacheKey = workflowReplayCacheKey(normalizedScope, normalizedKey)
+  if (workflowReplayRecords.value[cacheKey]) return workflowReplayRecords.value[cacheKey]
+  workflowReplayLoadingState.value = { ...workflowReplayLoadingState.value, [cacheKey]: true }
+  try {
+    const res = await getAgentWorkflowStateApi(normalizedScope, normalizedKey)
+    const item = (res?.item || null) as AgentWorkflowStateItem | null
+    workflowReplayRecords.value = { ...workflowReplayRecords.value, [cacheKey]: item }
+    return item
+  } finally {
+    workflowReplayLoadingState.value = { ...workflowReplayLoadingState.value, [cacheKey]: false }
+  }
+}
+
+/**
+ * 切换某条聊天消息关联的任务链回放展开状态。
+ */
+async function toggleMessageWorkflowReplay(msg: UiChatMessage) {
+  const stateKey = String(msg.agentWorkflowStateKey || '').trim()
+  if (!stateKey) return
+  const cacheKey = workflowReplayCacheKey('chat', stateKey)
+  const nextOpen = !workflowReplayOpenState.value[cacheKey]
+  workflowReplayOpenState.value = { ...workflowReplayOpenState.value, [cacheKey]: nextOpen }
+  if (!nextOpen) return
+  try {
+    await ensureWorkflowReplay('chat', stateKey)
+  } catch (e: any) {
+    workflowReplayOpenState.value = { ...workflowReplayOpenState.value, [cacheKey]: false }
+    message.error(e?.message || '加载任务链回放失败')
+  }
+}
+
+/**
+ * 切换当前任务 ID 对应的完整任务链回放。
+ */
+async function toggleCurrentJobWorkflowReplay() {
+  const stateKey = String(jobsStore.currentJobId || '').trim()
+  if (!stateKey) return
+  const cacheKey = workflowReplayCacheKey('job', stateKey)
+  const nextOpen = !workflowReplayOpenState.value[cacheKey]
+  workflowReplayOpenState.value = { ...workflowReplayOpenState.value, [cacheKey]: nextOpen }
+  if (!nextOpen) return
+  try {
+    await ensureWorkflowReplay('job', stateKey)
+  } catch (e: any) {
+    workflowReplayOpenState.value = { ...workflowReplayOpenState.value, [cacheKey]: false }
+    message.error(e?.message || '加载任务链回放失败')
+  }
+}
+
+/**
+ * 设置侧栏日志为普通或详细（管理员）。
+ */
+function setSidebarLogViewMode(mode: 'normal' | 'detail') {
+  if (mode === 'detail' && !isAdminUser.value) {
+    sidebarLogViewMode.value = 'normal'
+    return
+  }
+  sidebarLogViewMode.value = mode
+}
+
+/**
+ * 将管理端详细日志行格式化为可读文本。
+ */
+function formatAdminDetailLogMessage(row: any) {
+  const type = String(row?.type || '').trim().toLowerCase()
+  const rawMessage = String(row?.raw_message || '').trim()
+  const message = String(row?.message || '').trim()
+  const publicMessage = String(row?.public_message || '').trim()
+  const text = rawMessage || message || publicMessage
+  if (text) return text
+  if (type === 'status') {
+    const stage = String(row?.stage || '').trim()
+    const detail = String(row?.detail || '').trim()
+    return [stage, detail].filter(Boolean).join(' · ') || '状态更新'
+  }
+  return type ? `[${type}]` : '日志事件'
+}
+
+/**
+ * 拉取当前任务的详细推送日志供侧栏展示。
+ */
+async function refreshSidebarDetailedLogs() {
+  const jobId = String(jobsStore.currentJobId || '').trim()
+  if (!jobId || !isSidebarDetailMode.value) {
+    sidebarDetailedLogs.value = []
+    return
+  }
+  sidebarDetailedLogsLoading.value = true
+  try {
+    const res = await getAdminJobPushLogsApi(jobId, { limit: 500, includeNonLog: true })
+    const items = Array.isArray((res as any)?.items) ? ((res as any).items as any[]) : []
+    sidebarDetailedLogs.value = items
+      .map((row) => ({
+        ts: String((row as any)?.ts || ''),
+        message: formatAdminDetailLogMessage(row),
+      }))
+      .filter((x) => String(x.message || '').trim())
+      .slice(-240)
+  } catch (e: any) {
+    sidebarDetailedLogs.value = []
+    message.error(e?.message || '加载详细日志失败')
+  } finally {
+    sidebarDetailedLogsLoading.value = false
+  }
+}
+
+// 生命周期：挂载时恢复会话/模型、启动搜索日志轮询、注册全局事件
+onMounted(async () => {
+  globalStore.setBreadcrumbBarVisible(false)
+  syncUserSignatureFromAuth()
+  if (typeof window !== 'undefined') {
+    const uaPlatform = String((navigator as any)?.userAgentData?.platform || navigator.platform || navigator.userAgent || '').toLowerCase()
+    isMacLikePlatform.value = /mac|iphone|ipad|ipod/.test(uaPlatform)
+  }
+
+  if (typeof window !== 'undefined') {
+    const cached = localStorage.getItem(CHAT_MODEL_STORAGE_KEY)
+    if (cached) selectedModel.value = cached
+  }
+
+  await Promise.allSettled([bootstrapCurrentJob(), loadChatModels(), chatStore.refreshSessions().catch(() => undefined)])
+  handleNewChatRouteSignal(String(route.query.newChat || ''))
+  void loadSessionFromRoute(String(route.query.session || ''))
+  startSearchTaskPolling()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointerdown', handleGlobalPointerDown)
+    window.addEventListener('scroll', closeQuoteContextMenu, true)
+    window.addEventListener('keydown', handleGlobalKeydown)
+    window.addEventListener('focus', handleWindowFocus)
+    document.addEventListener('visibilitychange', handleDocumentVisibilityChange)
+  }
+})
+
+// 生命周期：卸载时停止轮询、移除监听、释放粘贴预览 blob
+onUnmounted(() => {
+  stopSearchTaskPolling()
+  closeQuoteContextMenu()
+  if (typeof window !== 'undefined' && messagesScrollFrame !== null) {
+    window.cancelAnimationFrame(messagesScrollFrame)
+    messagesScrollFrame = null
+  }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointerdown', handleGlobalPointerDown)
+    window.removeEventListener('scroll', closeQuoteContextMenu, true)
+    window.removeEventListener('keydown', handleGlobalKeydown)
+    window.removeEventListener('focus', handleWindowFocus)
+    document.removeEventListener('visibilitychange', handleDocumentVisibilityChange)
+  }
+  for (const img of composerImages.value) {
+    revokeComposerImagePreview(img.previewUrl)
+  }
+})
+
+// ========== 工具函数：消息区滚动、引用菜单、图片与视频预览 ==========
+
+/**
+ * 释放 blob: 预览 URL 避免内存泄漏。
+ */
+function revokeComposerImagePreview(url?: string) {
+  const target = String(url || '').trim()
+  if (!target || !target.startsWith('blob:') || typeof window === 'undefined') return
+  try {
+    window.URL.revokeObjectURL(target)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 判断消息列表是否接近底部（用于跟随时滚动）。
+ */
+function isMessagesNearBottom(el?: HTMLElement | null, threshold = 48) {
+  const node = el || messagesContainerRef.value
+  if (!node) return true
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= threshold
+}
+
+/**
+ * 在下一帧将消息区滚动到底部（可强制）。
+ */
+function queueMessagesScrollToBottom(force = false) {
+  if (!force && !autoFollowMessages.value) return
+  if (typeof window === 'undefined') return
+  if (messagesScrollFrame !== null) return
+  messagesScrollFrame = window.requestAnimationFrame(() => {
+    messagesScrollFrame = null
+    const el = messagesContainerRef.value
+    if (!el) return
+    if (!force && !autoFollowMessages.value) return
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+/**
+ * 开始流式回复时开启自动跟随滚动。
+ */
+function beginAssistantReplyAutoFollow() {
+  assistantReplyStreaming.value = true
+  autoFollowMessages.value = true
+  queueMessagesScrollToBottom(true)
+}
+
+/**
+ * 结束流式回复时关闭自动跟随。
+ */
+function endAssistantReplyAutoFollow() {
+  assistantReplyStreaming.value = false
+  autoFollowMessages.value = false
+}
+
+/**
+ * 用户滚动时若离开底部则取消自动跟随。
+ */
+function handleMessagesScroll() {
+  if (!assistantReplyStreaming.value) return
+  autoFollowMessages.value = isMessagesNearBottom()
+}
+
+/**
+ * 生成本地图片条目的唯一 ID。
+ */
+function makeComposerImageLocalId() {
+  return `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * 生成聊天流式请求的 client_request_id。
+ */
+function makeClientRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '')
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * 将会话消息快照写入内存缓存。
+ */
+function cacheSessionMessages(sessionUuid: string, items: UiChatMessage[]) {
+  const sid = String(sessionUuid || '').trim()
+  if (!sid) return
+  sessionMessageCache.value = {
+    ...sessionMessageCache.value,
+    [sid]: items,
+  }
+}
+
+/**
+ * 将引用内容截断为短摘要展示。
+ */
+function summarizeQuote(text: string) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim()
+  if (clean.length <= 160) return clean
+  return `${clean.slice(0, 160)}...`
+}
+
+/**
+ * 关闭「引用到输入框」右键菜单。
+ */
+function closeQuoteContextMenu() {
+  quoteContextMenu.value.visible = false
+}
+
+/**
+ * 在指定坐标打开引用上下文菜单并限制在视口内。
+ */
+function openQuoteContextMenu(event: MouseEvent, content: string, label: string) {
+  const clean = String(content || '').trim()
+  if (!clean) return
+  const menuWidth = 168
+  const menuHeight = 48
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 0
+  const maxX = viewportWidth > 0 ? Math.max(12, viewportWidth - menuWidth - 12) : event.clientX
+  const maxY = viewportHeight > 0 ? Math.max(12, viewportHeight - menuHeight - 12) : event.clientY
+  quoteContextMenu.value = {
+    visible: true,
+    x: Math.min(Math.max(12, event.clientX), maxX),
+    y: Math.min(Math.max(12, event.clientY), maxY),
+    content: clean,
+    label: String(label || '').trim() || '知识整合文档',
+  }
+}
+
+/**
+ * 点击页面其他区域时关闭引用菜单。
+ */
+function handleGlobalPointerDown(event: PointerEvent) {
+  if (!quoteContextMenu.value.visible) return
+  const target = event.target as Node | null
+  if (target && quoteContextMenuRef.value?.contains(target)) return
+  closeQuoteContextMenu()
+}
+
+/**
+ * Escape 关闭引用菜单、图片与视频全屏预览。
+ */
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  closeQuoteContextMenu()
+  closeImagePreview()
+  closeCandidateFullscreen()
+}
+
+/**
+ * 打开图片全屏预览层。
+ */
+function openImagePreview(url: string, label = '') {
+  const target = String(url || '').trim()
+  if (!target) return
+  imagePreview.value = {
+    visible: true,
+    url: target,
+    label: String(label || '').trim(),
+  }
+}
+
+/**
+ * 关闭图片预览。
+ */
+function closeImagePreview() {
+  imagePreview.value.visible = false
+}
+
+/**
+ * 关闭候选视频全屏预览层并重置状态。
+ */
+function closeCandidateFullscreen() {
+  candidateFullscreenPreview.value = {
+    visible: false,
+    title: '',
+    playableUrl: '',
+    embedUrl: '',
+    pageUrl: '',
+  }
+}
+
+/**
+ * 清空输入区上方的引用块。
+ */
+function clearComposerQuote() {
+  composerQuote.value = null
+}
+
+/**
+ * 按 localId 合并更新某张待发送图片的状态。
+ */
+function patchComposerImage(localId: string, patch: Partial<UiComposerImage>) {
+  composerImages.value = composerImages.value.map((img) => (
+    img.localId === localId ? { ...img, ...patch } : img
+  ))
+}
+
+/**
+ * 移除指定索引的图片并在已上传时调用删除接口。
+ */
+async function removeComposerImage(index: number) {
+  const current = composerImages.value[index]
+  if (!current) return
+  const isUploaded = current.uploadStatus === 'uploaded' && String(current.object_name || '').trim()
+  if (isUploaded) {
+    try {
+      await deleteChatImageApi(String(current.bucket || ''), String(current.object_name || ''))
+    } catch (e: any) {
+      message.error(e?.message || '删除图片失败')
+      return
+    }
+  }
+  const next = [...composerImages.value]
+  const [removed] = next.splice(index, 1)
+  revokeComposerImagePreview(removed?.previewUrl)
+  composerImages.value = next
+}
+
+/**
+ * 触发隐藏 file input 选择图片。
+ */
+function openComposerImagePicker() {
+  composerImageInputRef.value?.click()
+}
+
+/**
+ * 将所选文件加入待发送列表并逐个上传。
+ */
+async function uploadComposerFiles(files: File[]) {
+  const imageFiles = files.filter((file) => String(file.type || '').startsWith('image/'))
+  if (!imageFiles.length) return
+  const pendingItems: UiComposerImage[] = imageFiles.map((file) => ({
+    localId: makeComposerImageLocalId(),
+    url: '',
+    file_name: file.name,
+    mime_type: file.type,
+    size: file.size,
+    bucket: '',
+    object_name: '',
+    previewUrl: typeof window !== 'undefined' ? window.URL.createObjectURL(file) : '',
+    uploadStatus: 'uploading',
+    uploadProgress: 0,
+    errorMessage: '',
+    sourceFile: file,
+  }))
+  composerImages.value = [...composerImages.value, ...pendingItems]
+  await Promise.allSettled(pendingItems.map((img) => retryComposerImage(img.localId || '')))
+}
+
+/**
+ * 对上传失败或待上传的图片重新走上传流程。
+ */
+async function retryComposerImage(localId: string) {
+  const target = composerImages.value.find((img) => img.localId === localId)
+  const file = target?.sourceFile
+  if (!target || !(file instanceof File)) return
+  patchComposerImage(localId, {
+    uploadStatus: 'uploading',
+    uploadProgress: 0,
+    errorMessage: '',
+  })
+  try {
+    const res = await uploadChatImageApi(file, {
+      onProgress: (percent) => {
+        patchComposerImage(localId, { uploadProgress: percent })
+      },
+    })
+    patchComposerImage(localId, {
+      ...(res.image || {}),
+      uploadStatus: 'uploaded',
+      uploadProgress: 100,
+      errorMessage: '',
+      sourceFile: null,
+    })
+  } catch (e: any) {
+    const errText = String(e?.message || '上传图片失败')
+    patchComposerImage(localId, {
+      uploadStatus: 'failed',
+      errorMessage: errText,
+    })
+    message.error(errText)
+  }
+}
+
+/**
+ * 处理文件选择变更并开始上传。
+ */
+async function handleComposerFileInputChange(event: Event) {
+  const target = event.target as HTMLInputElement | null
+  const files = Array.from(target?.files || [])
+  if (target) target.value = ''
+  await uploadComposerFiles(files)
+}
+
+/**
+ * 在输入区粘贴图片时拦截并上传。
+ */
+async function handleComposerPaste(event: ClipboardEvent) {
+  const items = Array.from(event.clipboardData?.items || [])
+  const files = items
+    .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file instanceof File)
+  if (!files.length) return
+  event.preventDefault()
+  await uploadComposerFiles(files)
+}
+
+/**
+ * 助手 Markdown 气泡右键打开引用菜单。
+ */
+function handleMessageContextMenu(event: MouseEvent, msg: UiChatMessage) {
+  if (msg.role !== 'assistant' || !msg.renderAsMarkdown) return
+  openQuoteContextMenu(event, String(msg.content || ''), msg.markdownLabel || '知识整合文档')
+}
+
+/**
+ * 将 Markdown 内容设为 composer 引用并聚焦输入框。
+ */
+function quoteMarkdownIntoComposer(content: string, label: string) {
+  const clean = String(content || '').trim()
+  if (!clean) return
+  composerQuote.value = {
+    label: String(label || '').trim() || '知识整合文档',
+    content: clean,
+  }
+  nextTick(() => {
+    composerInputRef.value?.focus?.()
+  })
+  message.success('已引用到输入区，可继续补充要求')
+}
+
+/**
+ * 侧栏 Markdown 预览区右键打开引用菜单。
+ */
+function handleRailMarkdownContextMenu(event: MouseEvent) {
+  openQuoteContextMenu(event, currentNoteText.value, currentNoteLink.value?.file_name || 'Markdown 结果')
+}
+
+/**
+ * 从右键菜单把选中引用写入输入区。
+ */
+function applyContextQuote() {
+  const payload = quoteContextMenu.value
+  closeQuoteContextMenu()
+  quoteMarkdownIntoComposer(payload.content, payload.label)
+}
+
+/**
+ * 流式/保存前对助手正文做清理（占位，可扩展）。
+ */
+function sanitizeEvidenceTagText(v: string) {
+  return String(v || '')
+}
+
+/**
+ * 对流式首包文本做清理（占位）。
+ */
+function sanitizeFirstStreamChunk(v: string) {
+  return String(v || '')
+}
+
+/**
+ * 启发式判断字符串是否像 Markdown。
+ */
+function looksLikeMarkdownContent(v: string) {
+  const s = String(v || '').trim()
+  if (!s) return false
+  if (/(^|\n)\s*#{2,6}\s+\S/m.test(s)) return true
+  if (/(^|\n)\s*[-*]\s+\S/m.test(s)) return true
+  if (/(^|\n)\s*\d+\.\s+\S/m.test(s)) return true
+  if (/\[[^\]]+\]\(https?:\/\/[^\s)]+\)/.test(s)) return true
+  if (/(^|\n)\s*>\s+\S/m.test(s)) return true
+  if (/```[\s\S]*```/.test(s)) return true
+  return false
+}
+
+/**
+ * 根据当前登录用户同步侧栏签名/角色展示文案。
+ */
+function syncUserSignatureFromAuth() {
+  const user = authStore.user
+  if (!user) return
+  userStore.userName = user.display_name || user.username || userStore.userName
+  const role = String(user.role || 'tryuser')
+  if (role === 'admin') {
+    userStore.personalizedSignature = '管理员'
+    return
+  }
+  if (role === 'user') {
+    userStore.personalizedSignature = '正式用户'
+    return
+  }
+  const remain = Number(user.chat_quota_remaining ?? 0)
+  userStore.personalizedSignature = remain < 0 ? '试用用户（不限次数）' : `试用用户（剩余 ${remain} 次）`
+}
+
+/**
+ * 从流式 meta 更新用户聊天额度并刷新签名。
+ */
+function applyChatQuota(meta: any) {
+  const user = authStore.user
+  if (!user) return
+  const quota = meta?.chat_quota
+  if (!quota || typeof quota !== 'object') return
+  const total = Number((quota as any).chat_quota_total)
+  const used = Number((quota as any).chat_quota_used)
+  const remaining = Number((quota as any).chat_quota_remaining)
+  authStore.user = {
+    ...user,
+    chat_quota_total: Number.isFinite(total) ? total : user.chat_quota_total,
+    chat_quota_used: Number.isFinite(used) ? used : user.chat_quota_used,
+    chat_quota_remaining: Number.isFinite(remaining) ? remaining : user.chat_quota_remaining,
+  }
+  syncUserSignatureFromAuth()
+}
+
+/**
+ * 判断是否为 http(s) URL。
+ */
+function isHttpUrl(v: string) {
+  return /^https?:\/\/\S+$/i.test(String(v || '').trim())
+}
+
+/**
+ * 判断是否为网络超时重试类提示文案。
+ */
+function isRetryNotice(v: string) {
+  const s = String(v || '').trim()
+  return s.includes('网络超时重试中')
+}
+
+/**
+ * 从文本中提取第一个 URL。
+ */
+function extractFirstUrl(text: string) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  const m = raw.match(/https?:\/\/[^\s)"'<>]+/i)
+  return String(m?.[0] || '').replace(/[),.;!?]+$/g, '')
+}
+
+/**
+ * 从搜索/任务日志行对象中抽取可展示的链接或重试说明。
+ */
+function pickUrlFromLogRow(row: any) {
+  if (row && typeof row === 'object') {
+    const direct = extractFirstUrl(String((row as any)?.url || ''))
+    if (direct) return direct
+    const fromExtra = extractFirstUrl(String((row as any)?.extra?.url || ''))
+    if (fromExtra) return fromExtra
+    const fromMsg = extractFirstUrl(String((row as any)?.message || ''))
+    if (fromMsg) return fromMsg
+    const fromResult = extractFirstUrl(String((row as any)?.result?.url || ''))
+    if (fromResult) return fromResult
+    const msgText = String((row as any)?.message || '').trim()
+    if (isRetryNotice(msgText)) return msgText
+    const detailText = String((row as any)?.detail || '').trim()
+    if (isRetryNotice(detailText)) return detailText
+    return ''
+  }
+  const raw = String(row || '')
+  const asUrl = extractFirstUrl(raw)
+  if (asUrl) return asUrl
+  if (isRetryNotice(raw)) return raw.trim()
+  return ''
+}
+
+/**
+ * 轮询活跃搜索任务并汇总侧栏用日志行。
+ */
+async function refreshActiveSearchTaskLogs() {
+  if (!knowledgeRetrievalEnabled.value) {
+    activeSearchTaskLogs.value = []
+    searchTaskPollFailureCount = 0
+    searchTaskPollPausedUntil = 0
+    return
+  }
+  if (searchTaskPollPausedUntil > Date.now()) {
+    return
+  }
+  try {
+    const res = await listActiveSearchTasksApi(80)
+    const items = Array.isArray(res.items) ? res.items : []
+    const logs: Array<{ ts?: string; message: string }> = []
+    for (const item of items) {
+      const taskLogs = Array.isArray((item as any)?.logs) ? ((item as any)?.logs as any[]) : []
+      for (const row of taskLogs.slice(-20)) {
+        const ts = String((row as any)?.ts || '')
+        const message = pickUrlFromLogRow(row)
+        if (!message) continue
+        logs.push({ ts, message })
+      }
+    }
+    activeSearchTaskLogs.value = logs.slice(-240)
+    searchTaskPollFailureCount = 0
+    searchTaskPollPausedUntil = 0
+  } catch (e: any) {
+    searchTaskPollFailureCount += 1
+    if (searchTaskPollFailureCount >= SEARCH_TASK_POLL_MAX_FAILURES) {
+      searchTaskPollPausedUntil = Date.now() + SEARCH_TASK_POLL_PAUSE_MS
+      searchTaskPollFailureCount = 0
+      const ts = new Date().toISOString()
+      const reason = String(e?.message || '服务暂不可用')
+      const line = `搜索任务日志轮询已暂停 60 秒（${reason}）`
+      activeSearchTaskLogs.value = [...activeSearchTaskLogs.value, { ts, message: line }].slice(-240)
+    }
+  }
+}
+
+/**
+ * 启动搜索任务日志定时轮询。
+ */
+function startSearchTaskPolling() {
+  stopSearchTaskPolling()
+  searchTaskPollFailureCount = 0
+  searchTaskPollPausedUntil = 0
+  void refreshActiveSearchTaskLogs()
+  if (typeof window === 'undefined') return
+  searchTaskPollTimer = window.setInterval(() => {
+    void refreshActiveSearchTaskLogs()
+  }, SEARCH_TASK_POLL_INTERVAL_MS)
+}
+
+/**
+ * 停止搜索任务日志轮询。
+ */
+function stopSearchTaskPolling() {
+  if (searchTaskPollTimer !== null && typeof window !== 'undefined') {
+    window.clearInterval(searchTaskPollTimer)
+  }
+  searchTaskPollTimer = null
+}
+
+/**
+ * 助手消息上展示的检索进度主行（焦点行或日志末条）。
+ */
+function assistantProgressLine(msg: UiChatMessage) {
+  const focus = String(msg.searchFocusLine || '').trim()
+  if (focus) return focus
+  const logs = Array.isArray(msg.searchProgressLogs) ? msg.searchProgressLogs : []
+  const tail = logs.length ? String(logs[logs.length - 1]?.message || '').trim() : ''
+  return tail
+}
+
+/**
+ * 手动展开/收起右侧 Agent 轨道。
+ */
+function toggleTaskRail() {
+  if (!hasTaskRailContent.value) return
+  taskRailOpen.value = !taskRailOpen.value
+}
+
+/**
+ * 开关「知识检索」模式并重置默认检索源。
+ */
+function toggleKnowledgeRetrieval() {
+  const next = !knowledgeRetrievalEnabled.value
+  knowledgeRetrievalEnabled.value = next
+  if (next) {
+    retrievalModeNetwork.value = true
+    retrievalModeBili.value = false
+    retrievalModeDouyin.value = false
+  }
+}
+
+// --- watch：模型 localStorage、路由 newChat/session、检索轮询、管理端详细日志、侧栏滚动、任务完成拉 MD、Agent 轨道自动展开 ---
+watch(selectedModel, (val) => {
+  if (typeof window === 'undefined') return
+  if (!val) localStorage.removeItem(CHAT_MODEL_STORAGE_KEY)
+  else localStorage.setItem(CHAT_MODEL_STORAGE_KEY, val)
+})
+
+watch(
+  () => route.query.newChat,
+  (val) => {
+    handleNewChatRouteSignal(String(val || ''))
+  },
+)
+
+watch(
+  () => route.query.session,
+  (val) => {
+    void loadSessionFromRoute(String(val || ''))
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  knowledgeRetrievalEnabled,
+  () => {
+    void refreshActiveSearchTaskLogs()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [isAdminUser.value, sidebarLogViewMode.value, jobsStore.currentJobId] as const,
+  async ([isAdmin, mode, jobId]) => {
+    if (!isAdmin && mode !== 'normal') {
+      sidebarLogViewMode.value = 'normal'
+      sidebarDetailedLogs.value = []
+      return
+    }
+    if (mode === 'detail' && jobId) {
+      await refreshSidebarDetailedLogs()
+      return
+    }
+    sidebarDetailedLogs.value = []
+  },
+  { immediate: true },
+)
+
+// 侧栏「任务/检索日志」条数变化时自动滚到底部
+watch(
+  () => currentSidebarLogs.value.length,
+  async () => {
+    await nextTick()
+    const el = sidebarLogRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  },
+)
+
+watch(
+  () => [jobsStore.currentJobId, currentSnapshot.value?.status] as const,
+  async ([jobId, status]) => {
+    if (!jobId || status !== 'completed') return
+    await loadCurrentJobNoteAssets({ silent: true })
+  },
+)
+
+watch(
+  () => currentRailWorkflow.value,
+  (workflow) => {
+    maybeAutoOpenTaskRail(workflow)
+  },
+  { immediate: true },
+)
+
+// ========== 工具函数：任务运行时同步、会话加载、流式发送、候选与 playlist ==========
+
+/**
+ * 任务是否处于运行/排队/等待选择等活跃状态。
+ */
+function isActiveJobStatus(status: string) {
+  const s = String(status || '').trim()
+  return s === 'running' || s === 'queued' || s === 'waiting_user_pick'
+}
+
+/**
+ * 拉取当前任务快照并按状态连接或断开 SSE。
+ */
+async function syncCurrentJobRuntime(options: { forceReconnect?: boolean; silent?: boolean } = {}) {
+  const jobId = String(jobsStore.currentJobId || '').trim()
+  if (!jobId) return
+  const forceReconnect = Boolean(options.forceReconnect)
+  const silent = options.silent !== false
+  try {
+    const snap = await jobsStore.fetchJob(jobId)
+    const st = String(snap?.status || '')
+    if (isActiveJobStatus(st)) {
+      jobsStore.connectJobEvents(jobId, forceReconnect || currentJobState.value?.sseStatus !== 'connected')
+    } else if (st === 'completed') {
+      await loadCurrentJobNoteAssets({ silent: true })
+    } else if (currentJobState.value?.sseStatus === 'connected' || currentJobState.value?.sseStatus === 'connecting') {
+      jobsStore.disconnectJobEvents(jobId, false)
+    }
+  } catch (e: any) {
+    if (!silent) {
+      message.error(e?.message || '同步任务状态失败')
+    }
+  }
+}
+
+/**
+ * 窗口聚焦等场景节流触发任务与 SSE 恢复同步。
+ */
+function scheduleResumeSync(forceReconnect = true) {
+  const now = Date.now()
+  if (now - lastResumeSyncAt < 1200) return
+  lastResumeSyncAt = now
+  void syncCurrentJobRuntime({ forceReconnect, silent: true })
+}
+
+/**
+ * 恢复搜索日志轮询（清除失败暂停）。
+ */
+function resumeSearchTaskPollingNow() {
+  if (!knowledgeRetrievalEnabled.value) return
+  searchTaskPollFailureCount = 0
+  searchTaskPollPausedUntil = 0
+  void refreshActiveSearchTaskLogs()
+}
+
+/**
+ * 窗口获得焦点时恢复任务与搜索轮询。
+ */
+function handleWindowFocus() {
+  scheduleResumeSync(true)
+  resumeSearchTaskPollingNow()
+}
+
+/**
+ * 页面从隐藏切回可见时恢复任务与搜索轮询。
+ */
+function handleDocumentVisibilityChange() {
+  if (typeof document === 'undefined') return
+  if (document.visibilityState === 'visible') {
+    scheduleResumeSync(true)
+    resumeSearchTaskPollingNow()
+  }
+}
+
+/**
+ * 进入页面时若已有 currentJobId 则同步一次运行时。
+ */
+async function bootstrapCurrentJob() {
+  if (!jobsStore.currentJobId) return
+  await syncCurrentJobRuntime({ forceReconnect: true, silent: true })
+}
+
+/**
+ * 拉取可选聊天模型列表并设置默认选中。
+ */
+async function loadChatModels() {
+  if (!selectedModel.value || !ALI_DASHSCOPE_MODEL_ID_SET.has(selectedModel.value)) {
+    selectedModel.value = DEFAULT_ALI_CHAT_MODEL
+  }
+}
+
+/**
+ * 下拉选择模型并持久化到 localStorage。
+ */
+function handleModelSelect(key: string | number) {
+  selectedModel.value = String(key || '')
+}
+
+/**
+ * 响应路由上的 newChat 参数触发新开对话。
+ */
+function handleNewChatRouteSignal(token: string) {
+  if (!token || token === routeNewChatToken.value) return
+  routeNewChatToken.value = token
+  startNewConversation()
+}
+
+/**
+ * 重置会话、消息与任务相关 UI 状态。
+ */
+function startNewConversation() {
+  resetCurrentTaskState()
+  chatStore.clearCurrentSession()
+  chatSessionUuid.value = ''
+  messages.value = []
+  loadingSessionMessages.value = false
+  userInput.value = ''
+  knowledgeRetrievalEnabled.value = false
+  retrievalModeNetwork.value = true
+  retrievalModeBili.value = false
+  retrievalModeDouyin.value = false
+  taskRailOpen.value = false
+  taskRailAutoOpened.value = false
+  activeSearchTaskLogs.value = []
+  videoPreviewState.value = {}
+  closeCandidateFullscreen()
+  candidateSelectionState.value = {}
+  batchSelectingJobs.value = {}
+  candidatePageState.value = {}
+}
+
+/**
+ * 断开 SSE 并清空当前任务 ID 等。
+ */
+function resetCurrentTaskState() {
+  const currentId = jobsStore.currentJobId
+  if (currentId) jobsStore.disconnectJobEvents(currentId)
+  jobsStore.currentJobId = ''
+  loadingCurrentJobNote.value = false
+}
+
+/**
+ * 若无 session 则创建并更新路由 query。
+ */
+async function ensureChatSession() {
+  if (chatSessionUuid.value) return chatSessionUuid.value
+  const title = messages.value.find((m) => m.role === 'user')?.content || userInput.value.trim() || '新对话'
+  const localUuid = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const nowIso = new Date().toISOString()
+  chatSessionUuid.value = localUuid
+  chatStore.setCurrentSession(chatSessionUuid.value)
+  chatStore.upsertSession({
+    session_uuid: localUuid,
+    title,
+    created_at: nowIso,
+    updated_at: nowIso,
+    last_message_at: nowIso,
+  })
+  await upsertLocalChatSession(localUuid, title, nowIso)
+  skipNextRouteSessionHydrateUuid.value = chatSessionUuid.value
+  void router.replace({ path: '/home', query: { session: chatSessionUuid.value } })
+  return chatSessionUuid.value
+}
+
+/**
+ * 按 URL 中的 session 加载历史消息与任务绑定。
+ */
+async function loadSessionFromRoute(sessionUuidFromRoute: string) {
+  const sessionUuid = (sessionUuidFromRoute || '').trim()
+  if (!sessionUuid) {
+    resetCurrentTaskState()
+    chatStore.clearCurrentSession()
+    chatSessionUuid.value = ''
+    messages.value = []
+    loadingSessionMessages.value = false
+    candidatePageState.value = {}
+    taskRailOpen.value = false
+    taskRailAutoOpened.value = false
+    return
+  }
+  if (route.query.newChat) return
+  if (skipNextRouteSessionHydrateUuid.value && skipNextRouteSessionHydrateUuid.value === sessionUuid) {
+    skipNextRouteSessionHydrateUuid.value = ''
+    return
+  }
+  if (chatSessionUuid.value === sessionUuid && messages.value.length > 0) {
+    await syncCurrentJobRuntime({ forceReconnect: true, silent: true })
+    return
+  }
+  try {
+    const cachedMessages = sessionMessageCache.value[sessionUuid]
+    if (Array.isArray(cachedMessages) && cachedMessages.some((m) => Boolean(m.pending || m.streaming))) {
+      const previousJobId = String(jobsStore.currentJobId || '').trim()
+      if (previousJobId) jobsStore.disconnectJobEvents(previousJobId, false)
+      jobsStore.currentJobId = ''
+      chatStore.setCurrentSession(sessionUuid)
+      chatSessionUuid.value = sessionUuid
+      messages.value = cachedMessages
+      candidatePageState.value = {}
+      taskRailOpen.value = false
+      taskRailAutoOpened.value = false
+      maybeAutoOpenTaskRail(latestChatAgentWorkflow.value)
+      await syncCurrentJobRuntime({ forceReconnect: true, silent: true })
+      return
+    }
+    const previousJobId = String(jobsStore.currentJobId || '').trim()
+    if (previousJobId) jobsStore.disconnectJobEvents(previousJobId, false)
+    jobsStore.currentJobId = ''
+    loadingSessionMessages.value = true
+    messages.value = []
+    candidatePageState.value = {}
+    taskRailOpen.value = false
+    taskRailAutoOpened.value = false
+    chatStore.setCurrentSession(sessionUuid)
+    chatSessionUuid.value = sessionUuid
+    const sessionItems = await listSessionMessages(sessionUuid, 100)
+    const loaded = (sessionItems || []).map((m) => {
+      const localUi = ((m.meta as any)?.local_ui || {}) as Record<string, any>
+      const playlistCardFromMeta = playlistPreviewCardFromMeta(m.meta || {})
+      const playlistCard = playlistCardFromMeta || (localUi.playlist_card as any) || null
+      return {
+        localId: `srv-${m.id || Math.random().toString(36).slice(2, 8)}`,
+        messageId: typeof m.id === 'number' ? m.id : undefined,
+        role: (m.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+        content: (String(m.role || '') === 'assistant') ? sanitizeEvidenceTagText(String(m.content || '')) : String(m.content || ''),
+        images: Array.isArray(m.meta?.images) ? (m.meta?.images as UiComposerImage[]) : [],
+        quote: (m.meta?.quote as ChatQuoteReference | null) ?? null,
+        pending: false,
+        task: (m.meta?.task as JobCreateResponse | null) ?? null,
+        taskSnapshot: (((m.meta as any)?.task_snapshot as Record<string, any> | null) ?? (localUi.task_snapshot as Record<string, any> | null) ?? null),
+        toolDecisionReason: String(m.meta?.tool_decision?.reason || localUi.tool_decision_reason || '').trim() || undefined,
+        autoTask: Boolean(m.meta?.auto_task),
+        knowledgeLookupUsed: Boolean(m.meta?.knowledge_lookup?.used ?? localUi.knowledge_lookup_used),
+        knowledgeLookupReason: String(m.meta?.knowledge_lookup?.reason || localUi.knowledge_lookup_reason || '').trim() || undefined,
+        knowledgeHits: Array.isArray(m.meta?.knowledge_hits) ? (m.meta?.knowledge_hits as Array<Record<string, any>>) : [],
+        renderAsMarkdown: playlistCard ? false : (Boolean((m.meta as any)?.render_markdown) || (String(m.role || '') === 'assistant')),
+        markdownLabel: String((m.meta as any)?.job_note?.file_name || '').trim()
+          ? `Markdown 结果 · ${String((m.meta as any)?.job_note?.file_name || '').trim()}`
+          : (String(m.meta?.message_kind || '') === 'job_markdown')
+            ? 'Markdown 结果'
+            : (String((m.meta as any)?.markdown_label || localUi.markdown_label || '').trim() || undefined),
+        jobNoteJobId: String((m.meta as any)?.job_note?.job_id || localUi.job_note_job_id || '').trim() || undefined,
+        searchProgressLogs: Array.isArray((m.meta as any)?.search_dispatch?.logs)
+          ? (((m.meta as any)?.search_dispatch?.logs as Array<any>)
+              .map((x) => ({
+                ts: String(x?.ts || ''),
+                message: pickUrlFromLogRow(x),
+              }))
+              .filter((x) => isHttpUrl(x.message)))
+          : (Array.isArray(localUi.search_progress_logs)
+              ? ((localUi.search_progress_logs as Array<any>)
+                  .map((x) => ({
+                    ts: String(x?.ts || ''),
+                    message: pickUrlFromLogRow(x),
+                  }))
+                  .filter((x) => isHttpUrl(x.message)))
+              : []),
+        searchFocusLine: String(((m.meta as any)?.search_dispatch?.focus_line || localUi.search_focus_line || '')).trim() || undefined,
+        searchProgressVisible: Boolean(localUi.search_progress_visible),
+        streaming: Boolean(localUi.streaming),
+        preferMarkdown: Boolean((m.meta as any)?.prefer_markdown || localUi.prefer_markdown),
+        agentWorkflowStateKey: String((m.meta as any)?.agent_workflow_state_key || localUi.agent_workflow_state_key || '').trim() || undefined,
+        agentWorkflow: (((m.meta as any)?.agent_workflow as AgentWorkflow | null) ?? (localUi.agent_workflow as AgentWorkflow | null) ?? null),
+        playlistCard,
+      }
+    })
+    messages.value = loaded
+    const previewState: Record<string, string> = {}
+    for (const msg of loaded) {
+      const first = Array.isArray(msg.playlistCard?.items) ? msg.playlistCard!.items[0] : null
+      if (first) previewState[msg.localId] = workflowPlaylistEpisodeKey(first)
+    }
+    playlistPreviewActiveEpisodeState.value = previewState
+    cacheSessionMessages(sessionUuid, loaded)
+    maybeAutoOpenTaskRail(latestChatAgentWorkflow.value)
+    void Promise.allSettled(
+      loaded
+        .filter((msg) => msg.role === 'assistant' && Boolean(msg.playlistCard) && Boolean(msg.messageId))
+        .map((msg) => hydratePlaylistPreviewNotes(msg)),
+    )
+
+    const taskJobIds = loaded
+      .filter((m) => m.role === 'assistant' && m.task?.job_id)
+      .map((m) => String(m.task?.job_id || '').trim())
+      .filter(Boolean)
+    const latestTaskJobId = taskJobIds[taskJobIds.length - 1] || ''
+    const shouldShowKnowledgeMode = loaded.some((m) => m.autoTask || m.task)
+    knowledgeRetrievalEnabled.value = shouldShowKnowledgeMode
+    const latestAssistantWithModes = [...(sessionItems || [])]
+      .reverse()
+      .find((m) => String(m?.role || '') === 'assistant' && Array.isArray((m?.meta as any)?.search_modes))
+    if (latestAssistantWithModes && Array.isArray((latestAssistantWithModes.meta as any)?.search_modes)) {
+      const modes = ((latestAssistantWithModes.meta as any)?.search_modes as string[]).map((x) => String(x || '').toLowerCase())
+      retrievalModeNetwork.value = modes.includes('network')
+      retrievalModeBili.value = modes.includes('bili')
+      retrievalModeDouyin.value = modes.includes('douyin')
+    }
+
+    if (latestTaskJobId) {
+      chatStore.bindJobToSession(latestTaskJobId, sessionUuid)
+      jobsStore.setCurrentJob(latestTaskJobId)
+      // Fetch all task jobs concurrently so per-message candidate cards are restored
+      const olderJobIds = taskJobIds.slice(0, -1)
+      void Promise.allSettled(olderJobIds.map((jid) => jobsStore.fetchJob(jid)))
+      try {
+        await syncCurrentJobRuntime({ forceReconnect: true, silent: true })
+      } catch {
+        // ignore task bootstrap errors when restoring chat history
+      }
+    } else {
+      resetCurrentTaskState()
+    }
+  } catch {
+    // keep current UI state if loading old session fails
+  } finally {
+    loadingSessionMessages.value = false
+  }
+}
+
+/**
+ * 向 messages 追加一条 UI 消息并写入会话缓存。
+ */
+function appendUiMessage(payload: Partial<UiChatMessage> & Pick<UiChatMessage, 'role' | 'content'>) {
+  const item: UiChatMessage = {
+    localId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    messageId: typeof payload.messageId === 'number' ? payload.messageId : undefined,
+    role: payload.role,
+    content: payload.content,
+    images: Array.isArray(payload.images) ? payload.images : [],
+    quote: payload.quote ?? null,
+    pending: payload.pending,
+    task: payload.task ?? null,
+    taskSnapshot: payload.taskSnapshot ?? null,
+    toolDecisionReason: payload.toolDecisionReason,
+    autoTask: payload.autoTask,
+    knowledgeLookupUsed: payload.knowledgeLookupUsed,
+    knowledgeLookupReason: payload.knowledgeLookupReason,
+    knowledgeHits: Array.isArray(payload.knowledgeHits) ? payload.knowledgeHits : [],
+    renderAsMarkdown: payload.renderAsMarkdown ?? (payload.role === 'assistant'),
+    markdownLabel: payload.markdownLabel,
+    jobNoteJobId: payload.jobNoteJobId,
+    searchProgressLogs: Array.isArray(payload.searchProgressLogs) ? payload.searchProgressLogs : [],
+    searchFocusLine: String(payload.searchFocusLine || '').trim() || undefined,
+    searchProgressVisible: Boolean(payload.searchProgressVisible),
+    streaming: Boolean(payload.streaming),
+    preferMarkdown: Boolean(payload.preferMarkdown),
+    agentWorkflowStateKey: String(payload.agentWorkflowStateKey || '').trim() || undefined,
+    agentWorkflow: payload.agentWorkflow ?? null,
+    playlistCard: payload.playlistCard ?? null,
+  }
+  messages.value.push(item)
+  cacheSessionMessages(chatSessionUuid.value, messages.value)
+  const last = messages.value[messages.value.length - 1]
+  return (last || item) as UiChatMessage
+}
+
+/**
+ * 将服务端 ChatMessage 映射为 UI 消息并追加。
+ */
+function mapAssistantMessage(msg: ChatMessage, task: JobCreateResponse | null, toolDecision?: { reason?: string }) {
+  const jobNoteJobId = String((msg?.meta as any)?.job_note?.job_id || '').trim() || undefined
+  const jobNoteFileName = String((msg?.meta as any)?.job_note?.file_name || '').trim()
+  const effectiveTask = task ?? (msg?.meta?.task as JobCreateResponse | null) ?? null
+  const fallbackText = effectiveTask?.job_id
+    ? `已创建任务（${effectiveTask.job_id}），我会继续检索并实时同步进度。`
+    : '抱歉，这次回复异常中断，请重试一次。'
+  return appendUiMessage({
+    messageId: typeof msg?.id === 'number' ? msg.id : undefined,
+    role: 'assistant',
+    content: sanitizeEvidenceTagText(String(msg?.content || fallbackText)),
+    images: Array.isArray(msg?.meta?.images) ? (msg.meta.images as UiComposerImage[]) : [],
+    quote: (msg?.meta?.quote as ChatQuoteReference | null) ?? null,
+    task: effectiveTask,
+    taskSnapshot: ((msg?.meta as any)?.task_snapshot as Record<string, any> | null) ?? null,
+    toolDecisionReason:
+      String(toolDecision?.reason || msg?.meta?.tool_decision?.reason || '').trim() || undefined,
+    autoTask: Boolean(msg?.meta?.auto_task),
+    knowledgeLookupUsed: Boolean(msg?.meta?.knowledge_lookup?.used),
+    knowledgeLookupReason: String(msg?.meta?.knowledge_lookup?.reason || '').trim() || undefined,
+    knowledgeHits: Array.isArray(msg?.meta?.knowledge_hits) ? (msg?.meta?.knowledge_hits as Array<Record<string, any>>) : [],
+    renderAsMarkdown: true,
+    markdownLabel: jobNoteFileName ? `Markdown 结果 · ${jobNoteFileName}` : undefined,
+    jobNoteJobId,
+    searchProgressLogs: Array.isArray((msg?.meta as any)?.search_dispatch?.logs)
+      ? (((msg?.meta as any)?.search_dispatch?.logs as Array<any>)
+          .map((x) => ({
+            ts: String(x?.ts || ''),
+            message: pickUrlFromLogRow(x),
+          }))
+          .filter((x) => isHttpUrl(x.message)))
+      : [],
+    searchFocusLine: String(((msg?.meta as any)?.search_dispatch?.focus_line || '')).trim() || undefined,
+    searchProgressVisible: false,
+    streaming: false,
+    preferMarkdown: false,
+    agentWorkflowStateKey: String((msg?.meta as any)?.agent_workflow_state_key || '').trim() || undefined,
+    agentWorkflow: ((msg?.meta as any)?.agent_workflow as AgentWorkflow | null) ?? null,
+  })
+}
+
+/**
+ * 调用接口停止当前流式回复。
+ */
+async function stopCurrentReply() {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  const clientRequestId = String(activeChatRequestId.value || '').trim()
+  if (!sending.value || stoppingReply.value) return
+  stoppingReply.value = true
+  try {
+    replyStreamAbort.value?.abort()
+    replyStreamAbort.value = null
+    if (sessionUuid && clientRequestId) {
+      try {
+        await stopChatMessageStreamApi(sessionUuid, { client_request_id: clientRequestId })
+      } catch {
+        // 若已改用通义流式，后端可能无对应请求，忽略
+      }
+    }
+  } catch (e: any) {
+    message.error(e?.message || '停止回复失败')
+  } finally {
+    stoppingReply.value = false
+  }
+}
+
+/**
+ * 根据是否自动任务与检索模式生成占位提示语。
+ */
+function buildPendingAssistantPlaceholder(autoTask: boolean, searchModes: string[]) {
+  if (!autoTask) return '我正在整理回复，请稍候。'
+  const modes = (searchModes || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+  const hasBili = modes.includes('bili')
+  const hasNetwork = modes.includes('network')
+  const hasDouyin = modes.includes('douyin')
+  if (hasBili && !hasNetwork && !hasDouyin) {
+    return '我正在为你规划学习路径，并检索 B 站相关视频，请稍候。'
+  }
+  if (hasNetwork && !hasBili && !hasDouyin) {
+    return '我正在联网检索并整理相关内容，请稍候。'
+  }
+  if (hasDouyin && !hasBili && !hasNetwork) {
+    return '我正在检索抖音相关内容并整理结果，请稍候。'
+  }
+  return '我正在规划任务并检索相关资源，请稍候。'
+}
+
+/**
+ * 根据检索模式生成进度条上的焦点说明。
+ */
+function buildPendingSearchFocus(autoTask: boolean, searchModes: string[]) {
+  if (!autoTask) return undefined
+  const modes = (searchModes || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+  const hasBili = modes.includes('bili')
+  const hasNetwork = modes.includes('network')
+  const hasDouyin = modes.includes('douyin')
+  if (hasBili && !hasNetwork && !hasDouyin) return 'B站检索中：正在规划学习路径'
+  if (hasNetwork && !hasBili && !hasDouyin) return '联网检索中：正在规划任务'
+  if (hasDouyin && !hasBili && !hasNetwork) return '抖音检索中：正在规划任务'
+  return '多源检索中：正在规划任务'
+}
+
+/**
+ * 将当前会话气泡列表转为通义 OpenAI 兼容的 messages（排除当前占位中的助手气泡）。
+ */
+function buildQwenMessagesFromUi(items: UiChatMessage[], pendingAssistantLocalId: string) {
+  const out: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  for (const m of items) {
+    if (m.localId === pendingAssistantLocalId) continue
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    if (m.role === 'assistant' && m.pending) continue
+    let text = ''
+    if (m.role === 'user') {
+      text = String(m.content || '')
+      if (m.quote?.content) text = `【引用】\n${m.quote.content}\n\n${text}`
+      if ((m.images || []).length) {
+        text += '\n\n'
+        text += (m.images || []).map((img) => `![图片](${img.url})`).join('\n')
+      }
+    } else {
+      text = String(m.content || '')
+    }
+    const trimmed = text.trim()
+    if (!trimmed) continue
+    out.push({ role: m.role, content: trimmed })
+  }
+  return out
+}
+
+/**
+ * 发送用户消息、拉起流式助手回复并处理任务/工作流元事件。
+ */
+async function sendMessage() {
+  const text = userInput.value.trim()
+  const quote = composerQuote.value ? { ...composerQuote.value } : null
+  const images = composerImages.value
+    .filter((img) => img.uploadStatus !== 'failed' && img.uploadStatus !== 'uploading' && String(img.url || '').trim())
+    .map((img) => ({ ...img }))
+  const hasRichContext = Boolean(images.length || quote?.content)
+  if (!text && !images.length && !quote?.content) {
+    message.warning('请输入内容或上传图片')
+    return
+  }
+  if (sending.value) return
+  if (uploadingComposerImages.value) {
+    message.warning('图片仍在上传中，请稍后发送')
+    return
+  }
+  if (hasFailedComposerImages.value) {
+    message.warning('有图片上传失败，请重试或移除后再发送')
+    return
+  }
+  appendUiMessage({ role: 'user', content: text, images, quote })
+  userInput.value = ''
+  composerQuote.value = null
+  composerImages.value = []
+  const clientRequestId = makeClientRequestId()
+  const effectiveAutoTask = knowledgeRetrievalEnabled.value && !hasRichContext
+  const effectiveSearchModes = effectiveAutoTask ? selectedSearchModes.value : []
+  const initialAssistantPlaceholder = buildPendingAssistantPlaceholder(effectiveAutoTask, effectiveSearchModes)
+  const initialSearchFocus = buildPendingSearchFocus(effectiveAutoTask, effectiveSearchModes)
+  const pendingAssistant = appendUiMessage({
+    role: 'assistant',
+    content: initialAssistantPlaceholder,
+    pending: true,
+    streaming: true,
+    searchProgressVisible: Boolean(initialSearchFocus),
+    searchFocusLine: initialSearchFocus,
+    renderAsMarkdown: true,
+    preferMarkdown: true,
+  })
+  beginAssistantReplyAutoFollow()
+  sending.value = true
+  activeChatRequestId.value = clientRequestId
+  let shouldRevokeSentImages = false
+
+  try {
+    const sessionUuid = await ensureChatSession()
+    const sentUserMessage = messages.value[messages.value.length - 2]
+    if (sentUserMessage?.role === 'user') {
+      await saveLocalChatMessage(sessionUuid, sentUserMessage)
+    }
+    cacheSessionMessages(sessionUuid, messages.value)
+    let taskInfo: JobCreateResponse | null = null
+    let toolDecisionReason = ''
+    let shouldCreateJob = false
+    let taskHandled = false
+    let gotAnyDelta = false
+    let savedAssistantContent = ''
+    let typewriterBuffer = ''
+    let typewriterTimer: number | null = null
+    let finalDoneText = ''
+    let streamStarted = false
+    let shouldHideSearchProgress = false
+    let backendSearchDispatchEnabled = false
+
+    const TYPEWRITER_INTERVAL_MS = 22
+
+    const typewriterBatchSize = () => {
+      const len = typewriterBuffer.length
+      if (len > 240) return 10
+      if (len > 120) return 6
+      if (len > 40) return 4
+      return 2
+    }
+
+    const applySearchFocus = (raw: any) => {
+      const line = String(raw?.line || '').trim()
+      if (!line) return
+      pendingAssistant.searchFocusLine = line
+      pendingAssistant.searchProgressVisible = true
+    }
+
+    const appendSearchTaskLog = (raw: any) => {
+      const ts = String(raw?.ts || new Date().toISOString())
+      const msg = pickUrlFromLogRow(raw)
+      if (!msg || (!isHttpUrl(msg) && !isRetryNotice(msg))) return
+      const line = msg
+      activeSearchTaskLogs.value = [...activeSearchTaskLogs.value, { ts, message: line }].slice(-240)
+      const logs = Array.isArray(pendingAssistant.searchProgressLogs) ? [...pendingAssistant.searchProgressLogs] : []
+      logs.push({ ts, message: line })
+      pendingAssistant.searchProgressLogs = logs.slice(-80)
+      pendingAssistant.searchProgressVisible = true
+    }
+
+    const stopTypewriter = () => {
+      if (typewriterTimer !== null && typeof window !== 'undefined') {
+        window.clearInterval(typewriterTimer)
+      }
+      typewriterTimer = null
+    }
+
+    const typewriterTick = () => {
+      if (!typewriterBuffer.length) {
+        stopTypewriter()
+        return
+      }
+      const batchSize = typewriterBatchSize()
+      const chunk = typewriterBuffer.slice(0, batchSize)
+      typewriterBuffer = typewriterBuffer.slice(batchSize)
+      if (chunk) {
+        pendingAssistant.pending = false
+        pendingAssistant.streaming = true
+        pendingAssistant.content = `${pendingAssistant.content || ''}${chunk}`
+        pendingAssistant.content = sanitizeEvidenceTagText(pendingAssistant.content)
+        queueMessagesScrollToBottom()
+      }
+      if (!typewriterBuffer.length && finalDoneText && !String(pendingAssistant.content || '').trim()) {
+        pendingAssistant.content = finalDoneText
+      }
+    }
+
+    const enqueueTypewriter = (textChunk: string) => {
+      let chunk = sanitizeEvidenceTagText(String(textChunk || ''))
+      if (!streamStarted) chunk = sanitizeFirstStreamChunk(chunk)
+      if (!chunk) return
+      if (!streamStarted && String(pendingAssistant.content || '').trim() === initialAssistantPlaceholder.trim()) {
+        pendingAssistant.content = ''
+      }
+      streamStarted = true
+      typewriterBuffer += chunk
+      if (typewriterTimer === null && typeof window !== 'undefined') {
+        typewriterTimer = window.setInterval(typewriterTick, TYPEWRITER_INTERVAL_MS)
+      }
+    }
+
+    const qwenMessages = buildQwenMessagesFromUi(messages.value, pendingAssistant.localId)
+    const streamAbort = new AbortController()
+    replyStreamAbort.value = streamAbort
+
+    await sendChatMessageByAliQianwenApi(
+      sessionUuid,
+      {
+        content: text,
+        client_request_id: clientRequestId,
+        images: images.map(({ previewUrl, uploadStatus, uploadProgress, errorMessage, sourceFile, localId, ...img }) => img),
+        quote: quote?.content ? quote : null,
+        model_name: selectedModel.value || '',
+        auto_task: effectiveAutoTask,
+        search_modes: effectiveSearchModes,
+        ...(globalStore.chatTaskParams || {}),
+        pipeline_model_name: selectedModel.value || '',
+      },
+      {
+        onMeta: (meta) => {
+          applyChatQuota(meta)
+          taskInfo = (meta?.task as JobCreateResponse | null) || null
+          shouldCreateJob = Boolean(meta?.tool_decision?.should_create_job)
+          toolDecisionReason = String(meta?.tool_decision?.reason || '').trim()
+          pendingAssistant.knowledgeLookupUsed = Boolean(meta?.knowledge_lookup?.used)
+          pendingAssistant.knowledgeLookupReason = String(meta?.knowledge_lookup?.reason || '').trim() || undefined
+          pendingAssistant.knowledgeHits = Array.isArray(meta?.knowledge_hits)
+            ? (meta.knowledge_hits as Array<Record<string, any>>)
+            : []
+          pendingAssistant.taskSnapshot = ((meta?.task_snapshot as Record<string, any>) || pendingAssistant.taskSnapshot || null)
+          pendingAssistant.agentWorkflowStateKey =
+            String((meta as any)?.agent_workflow_state_key || '').trim() || pendingAssistant.agentWorkflowStateKey
+          pendingAssistant.agentWorkflow = ((meta?.agent_workflow as AgentWorkflow | null) || pendingAssistant.agentWorkflow || null)
+          maybeAutoOpenTaskRail(pendingAssistant.agentWorkflow)
+          if (Array.isArray(meta?.search_modes)) {
+            const modes = (meta.search_modes as string[]).map((x) => String(x || '').toLowerCase())
+            retrievalModeNetwork.value = modes.includes('network')
+            retrievalModeBili.value = modes.includes('bili')
+            retrievalModeDouyin.value = modes.includes('douyin')
+          }
+          backendSearchDispatchEnabled = Boolean((meta as any)?.search_dispatch?.enabled)
+          if (backendSearchDispatchEnabled) {
+            pendingAssistant.preferMarkdown = true
+            pendingAssistant.markdownLabel = pendingAssistant.markdownLabel || '知识整合文档'
+            if (!String(pendingAssistant.content || '').trim()) {
+              pendingAssistant.content = initialAssistantPlaceholder
+            }
+            pendingAssistant.searchFocusLine = pendingAssistant.searchFocusLine || '浏览中：准备检索网页'
+            pendingAssistant.searchProgressVisible = true
+          } else {
+            pendingAssistant.searchProgressVisible = false
+            pendingAssistant.searchFocusLine = undefined
+          }
+          if (taskInfo?.job_id && !taskHandled) {
+            taskHandled = true
+            pendingAssistant.task = taskInfo
+            pendingAssistant.toolDecisionReason = toolDecisionReason || undefined
+            if (chatSessionUuid.value) {
+              chatStore.bindJobToSession(taskInfo.job_id, chatSessionUuid.value)
+            }
+            void (async () => {
+              jobsStore.setCurrentJob(taskInfo!.job_id)
+              try {
+                await jobsStore.fetchJob(taskInfo!.job_id)
+              } catch {
+                // ignore
+              }
+              jobsStore.connectJobEvents(taskInfo!.job_id)
+              message.success('已创建任务，并保留在当前对话页继续聊天')
+            })()
+          }
+        },
+        onStart: () => {
+          pendingAssistant.pending = true
+          pendingAssistant.streaming = true
+          if (!String(pendingAssistant.content || '').trim()) {
+            pendingAssistant.content = initialAssistantPlaceholder
+          }
+          beginAssistantReplyAutoFollow()
+        },
+        onDelta: (deltaText) => {
+          gotAnyDelta = gotAnyDelta || !!deltaText
+          pendingAssistant.pending = false
+          enqueueTypewriter(String(deltaText || ''))
+        },
+        onDone: (doneData) => {
+          pendingAssistant.pending = false
+          finalDoneText = sanitizeEvidenceTagText(String(doneData?.text || ''))
+          if (backendSearchDispatchEnabled) {
+            pendingAssistant.searchFocusLine = pendingAssistant.searchFocusLine || '总结中：已完成'
+            shouldHideSearchProgress = true
+          }
+          if (finalDoneText) {
+            // 终态文本到达时，直接以 done.text 为准，避免 residual delta 再次追加导致整段重复。
+            typewriterBuffer = ''
+            stopTypewriter()
+            pendingAssistant.content = finalDoneText
+          }
+        },
+        onSaved: (savedData) => {
+          const msg = (savedData?.assistant_message || null) as ChatMessage | null
+          savedAssistantContent = sanitizeEvidenceTagText(String(msg?.content || ''))
+          if (savedAssistantContent.trim()) {
+            pendingAssistant.content = savedAssistantContent
+            pendingAssistant.pending = false
+          }
+          applyChatQuota(msg?.meta || {})
+          const messageKind = String(msg?.meta?.message_kind || '')
+          pendingAssistant.renderAsMarkdown = true
+          pendingAssistant.preferMarkdown = true
+          if (Boolean(msg?.meta?.render_markdown) || ['job_markdown', 'search_markdown'].includes(messageKind)) {
+            if (!pendingAssistant.markdownLabel && messageKind === 'search_markdown') {
+              pendingAssistant.markdownLabel = '知识整合文档'
+            }
+          }
+          if (msg?.meta?.tool_decision?.reason && !toolDecisionReason) {
+            toolDecisionReason = String(msg.meta.tool_decision.reason || '')
+            pendingAssistant.toolDecisionReason = toolDecisionReason || undefined
+          }
+          if (msg?.meta?.task && !pendingAssistant.task) {
+            pendingAssistant.task = msg.meta.task as JobCreateResponse
+            if (chatSessionUuid.value && pendingAssistant.task?.job_id) {
+              chatStore.bindJobToSession(pendingAssistant.task.job_id, chatSessionUuid.value)
+            }
+          }
+          if ((msg?.meta as any)?.task_snapshot) {
+            pendingAssistant.taskSnapshot = (msg?.meta as any).task_snapshot as Record<string, any>
+          }
+          pendingAssistant.agentWorkflowStateKey =
+            String((msg?.meta as any)?.agent_workflow_state_key || '').trim() || pendingAssistant.agentWorkflowStateKey
+          pendingAssistant.knowledgeLookupUsed = Boolean(msg?.meta?.knowledge_lookup?.used) || pendingAssistant.knowledgeLookupUsed
+          pendingAssistant.knowledgeLookupReason =
+            String(msg?.meta?.knowledge_lookup?.reason || '').trim() || pendingAssistant.knowledgeLookupReason
+          if (Array.isArray(msg?.meta?.knowledge_hits)) {
+            pendingAssistant.knowledgeHits = msg.meta.knowledge_hits as Array<Record<string, any>>
+          }
+          if ((msg?.meta as any)?.agent_workflow) {
+            pendingAssistant.agentWorkflow = (msg?.meta as any).agent_workflow as AgentWorkflow
+            maybeAutoOpenTaskRail(pendingAssistant.agentWorkflow)
+          }
+        },
+        onAgentUpdate: (data) => {
+          const workflow = (data?.workflow || null) as AgentWorkflow | null
+          if (workflow) {
+            pendingAssistant.agentWorkflow = workflow
+            maybeAutoOpenTaskRail(workflow)
+          }
+        },
+        onSearchLog: (data) => {
+          appendSearchTaskLog(data || {})
+        },
+        onSearchStatus: (data) => {
+          const d = data || {}
+          appendSearchTaskLog(d)
+        },
+        onSearchFocus: (data) => {
+          applySearchFocus(data || {})
+        },
+        onSearchResult: (data) => {
+          const d = data || {}
+          appendSearchTaskLog(d)
+          const result = (d as any)?.result || {}
+          const mode = String((result as any)?.mode || '').trim().toLowerCase()
+          if (mode === 'network') {
+            const sources = Array.isArray((result as any)?.sources) ? ((result as any)?.sources as any[]) : []
+            for (const row of sources) appendSearchTaskLog(row || {})
+          } else if (mode === 'bili') {
+            const cands = Array.isArray((result as any)?.candidates) ? ((result as any)?.candidates as any[]) : []
+            for (const row of cands) appendSearchTaskLog(row || {})
+          } else if (mode === 'douyin') {
+            const cands = Array.isArray((result as any)?.candidates) ? ((result as any)?.candidates as any[]) : []
+            for (const row of cands) appendSearchTaskLog(row || {})
+          }
+        },
+      },
+      {
+        signal: streamAbort.signal,
+        messages: qwenMessages.length ? qwenMessages : undefined,
+      },
+    )
+
+    pendingAssistant.pending = false
+    pendingAssistant.streaming = false
+    endAssistantReplyAutoFollow()
+    pendingAssistant.toolDecisionReason = toolDecisionReason || pendingAssistant.toolDecisionReason
+    if (typewriterTimer !== null) {
+      while (typewriterBuffer.length) typewriterTick()
+      stopTypewriter()
+    }
+    pendingAssistant.content = sanitizeEvidenceTagText(pendingAssistant.content || '')
+    if (pendingAssistant.preferMarkdown || pendingAssistant.role === 'assistant') {
+      pendingAssistant.renderAsMarkdown = true
+    }
+    if (shouldHideSearchProgress) {
+      pendingAssistant.searchProgressVisible = false
+      pendingAssistant.searchFocusLine = undefined
+    }
+
+    if (!String(pendingAssistant.content || '').trim()) {
+      const pendingTaskJobId = String((pendingAssistant.task as any)?.job_id || '').trim()
+      if (String(savedAssistantContent || '').trim()) {
+        pendingAssistant.content = sanitizeEvidenceTagText(savedAssistantContent)
+      } else if (pendingTaskJobId) {
+        pendingAssistant.content = `已创建任务（${pendingTaskJobId}），我会继续检索并实时同步进度。`
+      } else {
+        try {
+          const items = await listSessionMessages(sessionUuid, 20)
+          const lastAssistant = [...items].reverse().find((x) => String(x?.role || '') === 'assistant')
+          const recovered = sanitizeEvidenceTagText(String(lastAssistant?.content || ''))
+          if (recovered.trim()) {
+            pendingAssistant.content = recovered
+            const lk = String((lastAssistant?.meta as any)?.message_kind || '')
+            if (String(lastAssistant?.role || '') === 'assistant') {
+              pendingAssistant.renderAsMarkdown = true
+            }
+            if (Boolean(lastAssistant?.meta?.render_markdown) || ['job_markdown', 'search_markdown'].includes(lk)) {
+              if (!pendingAssistant.markdownLabel && lk === 'search_markdown') {
+                pendingAssistant.markdownLabel = '知识整合文档'
+              }
+            }
+            if (lastAssistant?.meta?.tool_decision?.reason && !pendingAssistant.toolDecisionReason) {
+              pendingAssistant.toolDecisionReason = String(lastAssistant.meta.tool_decision.reason || '').trim() || undefined
+            }
+            pendingAssistant.knowledgeLookupUsed = Boolean(lastAssistant?.meta?.knowledge_lookup?.used) || pendingAssistant.knowledgeLookupUsed
+            pendingAssistant.knowledgeLookupReason =
+              String(lastAssistant?.meta?.knowledge_lookup?.reason || '').trim() || pendingAssistant.knowledgeLookupReason
+            if (Array.isArray(lastAssistant?.meta?.knowledge_hits)) {
+              pendingAssistant.knowledgeHits = lastAssistant.meta.knowledge_hits as Array<Record<string, any>>
+            }
+            if ((lastAssistant?.meta as any)?.task_snapshot) {
+              pendingAssistant.taskSnapshot = (lastAssistant?.meta as any)?.task_snapshot as Record<string, any>
+            }
+            pendingAssistant.agentWorkflowStateKey =
+              String((lastAssistant?.meta as any)?.agent_workflow_state_key || '').trim() || pendingAssistant.agentWorkflowStateKey
+            if ((lastAssistant?.meta as any)?.agent_workflow) {
+              pendingAssistant.agentWorkflow = (lastAssistant?.meta as any)?.agent_workflow as AgentWorkflow
+            }
+          }
+        } catch {
+          // ignore recovery errors
+        }
+        if (!String(pendingAssistant.content || '').trim()) {
+          pendingAssistant.content = '抱歉，这次回复异常中断，请重试一次。'
+        }
+      }
+    }
+    chatStore.upsertSession({
+      session_uuid: sessionUuid,
+      title: messages.value.find((m) => m.role === 'user')?.content || text,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    await upsertLocalChatSession(
+      sessionUuid,
+      messages.value.find((m) => m.role === 'user')?.content || text,
+      new Date().toISOString(),
+    )
+    shouldRevokeSentImages = true
+    void authStore.fetchMe().then(() => {
+      syncUserSignatureFromAuth()
+    }).catch(() => undefined)
+    void chatStore.refreshSessions().catch(() => undefined)
+  } catch (e: any) {
+    if (!composerQuote.value && quote?.content) composerQuote.value = quote
+    if (!composerImages.value.length && images.length) composerImages.value = images
+    pendingAssistant.pending = false
+    pendingAssistant.streaming = false
+    pendingAssistant.searchProgressVisible = false
+    const aborted =
+      e?.name === 'AbortError' ||
+      (typeof e?.message === 'string' && /aborted|AbortError/i.test(e.message))
+    if (aborted) {
+      const cur = String(pendingAssistant.content || '').trim()
+      pendingAssistant.content = cur || '已停止生成'
+    } else {
+      pendingAssistant.content = `发送失败：${e?.message || '未知错误'}`
+    }
+    endAssistantReplyAutoFollow()
+    const errText = String(e?.message || '')
+    if (!aborted && /额度|quota|chat_quota|次数/.test(errText)) {
+      void authStore.fetchMe().then(() => {
+        syncUserSignatureFromAuth()
+      }).catch(() => undefined)
+    }
+    if (!aborted) message.error(e?.message || '发送失败')
+    if (chatSessionUuid.value) {
+      await upsertLocalChatSession(
+        chatSessionUuid.value,
+        messages.value.find((m) => m.role === 'user')?.content || text,
+        new Date().toISOString(),
+      )
+    }
+  } finally {
+    endAssistantReplyAutoFollow()
+    replyStreamAbort.value = null
+    if (shouldRevokeSentImages) {
+      for (const img of images) revokeComposerImagePreview(img.previewUrl)
+    }
+    sending.value = false
+    activeChatRequestId.value = ''
+    cacheSessionMessages(chatSessionUuid.value, messages.value)
+    if (chatSessionUuid.value) {
+      await syncLocalSessionSnapshot(
+        chatSessionUuid.value,
+        messages.value.find((m) => m.role === 'user')?.content || userInput.value.trim() || '新对话',
+      )
+    }
+  }
+}
+
+/**
+ * 手动刷新当前任务快照与侧栏日志/笔记。
+ */
+async function refreshCurrentJob() {
+  if (!jobsStore.currentJobId) return
+  try {
+    await jobsStore.fetchJob(jobsStore.currentJobId)
+    if (isSidebarDetailMode.value) {
+      await refreshSidebarDetailedLogs()
+    }
+    if (currentSnapshot.value?.status === 'completed') {
+      await loadCurrentJobNoteAssets({ silent: true })
+    }
+    message.success('已刷新当前任务')
+  } catch (e: any) {
+    message.error(e?.message || '刷新失败')
+  }
+}
+
+/**
+ * 切换当前任务的实时 SSE 连接。
+ */
+function toggleCurrentJobSse() {
+  if (!jobsStore.currentJobId) return
+  const s = currentJobState.value?.sseStatus
+  if (s === 'connected') {
+    jobsStore.disconnectJobEvents(jobsStore.currentJobId)
+  } else {
+    jobsStore.connectJobEvents(jobsStore.currentJobId)
+  }
+}
+
+/**
+ * 跳转任务详情页并附带来源会话 query。
+ */
+function openJob(id: string) {
+  const session = String(chatSessionUuid.value || chatStore.getJobSourceSession(id) || '').trim()
+  if (session) {
+    router.push({ path: `/jobs/${id}`, query: { from: 'chat', session } })
+    return
+  }
+  router.push(`/jobs/${id}`)
+}
+
+/**
+ * 从任务快照或消息快照读取候选视频列表。
+ */
+function jobVideoCandidates(jobId: string): TopicSelectedVideo[] {
+  const result = jobsStore.jobs[jobId]?.snapshot?.result as any
+  const items = result?.selected_videos
+  if (Array.isArray(items)) return items as TopicSelectedVideo[]
+  const fallback = taskSnapshotByJob.value[jobId]?.selected_videos
+  return Array.isArray(fallback) ? (fallback as TopicSelectedVideo[]) : []
+}
+
+/**
+ * 读取任务结果中的队列批次摘要。
+ */
+function jobQueueBatch(jobId: string): TopicQueueBatchSummary | null {
+  const result = jobsStore.jobs[jobId]?.snapshot?.result as any
+  const qb = result?.queue_batch
+  return qb && typeof qb === 'object' ? (qb as TopicQueueBatchSummary) : null
+}
+
+/**
+ * 读取队列批次中已完成子项。
+ */
+function jobQueueCompletedItems(jobId: string) {
+  const qb = jobQueueBatch(jobId)
+  return Array.isArray(qb?.completed_items) ? qb!.completed_items! : []
+}
+
+/**
+ * 在队列批次中查找与某候选视频 URL 对应的项。
+ */
+function candidateQueueItem(jobId: string, video: TopicSelectedVideo) {
+  const qb = jobQueueBatch(jobId)
+  const items = Array.isArray(qb?.items) ? qb!.items! : []
+  const url = String(video.url || '').trim()
+  return (items.find((x) => String((x as any)?.bili_url || '') === url) || null) as any
+}
+
+/**
+ * 判断任务是否为 topic 类。
+ */
+function isTopicTask(jobId: string) {
+  const kind = String(jobsStore.jobs[jobId]?.snapshot?.kind || '')
+  if (kind === 'topic') return true
+  const fallbackKind = String(taskSnapshotByJob.value[jobId]?.kind || '')
+  return fallbackKind === 'topic'
+}
+
+/**
+ * 判断任务是否已结束（完成或失败）。
+ */
+function isJobTerminal(jobId: string) {
+  const s = String(jobsStore.jobs[jobId]?.snapshot?.status || '')
+  return s === 'completed' || s === 'failed'
+}
+
+/**
+ * 是否应在该条助手消息下展示候选视频面板。
+ */
+function shouldRenderCandidatePanel(msg: UiChatMessage) {
+  const jobId = String(msg?.task?.job_id || '').trim()
+  if (!jobId) return false
+  if (firstTaskMessageLocalIdByJob.value[jobId] !== msg.localId) return false
+  if (isJobTerminal(jobId) && !jobVideoCandidates(jobId).length) return false
+  return true
+}
+
+/**
+ * 候选列表每页条数。
+ */
+function candidatePageSize() {
+  return 12
+}
+
+/**
+ * 候选列表总页数。
+ */
+function candidateTotalPages(jobId: string) {
+  const total = jobVideoCandidates(jobId).length
+  return Math.max(1, Math.ceil(total / candidatePageSize()))
+}
+
+/**
+ * 当前页码（超出时钳制）。
+ */
+function candidateCurrentPage(jobId: string) {
+  const totalPages = candidateTotalPages(jobId)
+  const current = Math.max(1, Number(candidatePageState.value[jobId] || 1))
+  if (current > totalPages) {
+    candidatePageState.value[jobId] = totalPages
+    return totalPages
+  }
+  return current
+}
+
+/**
+ * 设置某任务的候选列表页码。
+ */
+function setCandidatePage(jobId: string, page: number) {
+  const totalPages = candidateTotalPages(jobId)
+  const nextPage = Math.max(1, Math.min(totalPages, Number(page || 1)))
+  candidatePageState.value = { ...candidatePageState.value, [jobId]: nextPage }
+}
+
+/**
+ * 返回当前页的候选视频切片。
+ */
+function pagedJobVideoCandidates(jobId: string) {
+  const all = jobVideoCandidates(jobId)
+  const page = candidateCurrentPage(jobId)
+  const size = candidatePageSize()
+  const start = (page - 1) * size
+  return all.slice(start, start + size)
+}
+
+/**
+ * 用于内嵌预览状态的唯一键（页面 URL 等）。
+ */
+function videoPreviewKey(video: TopicSelectedVideo) {
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  return String(pageUrl || rawUrl || video.title || '').trim()
+}
+
+/**
+ * 某任务当前展开预览的视频键。
+ */
+function activeVideoPreviewKey(jobId: string) {
+  return String(videoPreviewState.value[jobId] || '')
+}
+
+/**
+ * 解析候选视频的 page/play/raw URL（含 ||| 分隔格式）。
+ */
+function candidateVideoUrls(video: TopicSelectedVideo) {
+  const rawUrl = String(video.url || '').trim()
+  let pageUrl = String((video as any).page_url || (video as any).canonical_url || (video as any).share_url || '').trim()
+  let playUrl = String((video as any).play_url || '').trim()
+  if (rawUrl.includes('|||')) {
+    const parts = rawUrl.split('|||', 2)
+    if (!pageUrl) pageUrl = String(parts[0] || '').trim()
+    if (!playUrl) playUrl = String(parts[1] || '').trim()
+  } else {
+    if (!pageUrl && /^https?:\/\//i.test(rawUrl)) pageUrl = rawUrl
+    if (!playUrl && /^https?:\/\/.+\.(mp4|m3u8)(\?|$)/i.test(rawUrl)) playUrl = rawUrl
+  }
+  return { rawUrl, pageUrl, playUrl }
+}
+
+/**
+ * 根据 platform 或 URL 判断是否为抖音视频。
+ */
+function isDouyinCandidate(video: TopicSelectedVideo) {
+  const platform = String((video as any).platform || '').trim().toLowerCase()
+  if (platform === 'douyin') return true
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const probe = `${pageUrl} ${rawUrl}`.toLowerCase()
+  return probe.includes('douyin.com') || probe.includes('v.douyin.com') || probe.includes('iesdouyin.com')
+}
+
+/**
+ * 从文本中提取 B 站 BV 号。
+ */
+function extractBvid(text: string) {
+  const m = String(text || '').match(/BV[0-9A-Za-z]{10}/)
+  return m ? m[0] : ''
+}
+
+/**
+ * 从 URL 或查询参数解析分 P 序号。
+ */
+function extractBiliPageNumber(video: TopicSelectedVideo) {
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const probe = String(pageUrl || rawUrl || '').trim()
+  if (!probe) return 1
+  try {
+    const url = new URL(probe)
+    const page = Number(url.searchParams.get('p') || '1')
+    if (Number.isFinite(page) && page > 0) return Math.floor(page)
+  } catch {
+    // ignore
+  }
+  const m = probe.match(/[?&]p=(\d+)/i)
+  if (m?.[1]) return Math.max(1, Number(m[1]) || 1)
+  return 1
+}
+
+/**
+ * 抖音返回经后端代理的可播放直链；非抖音返回空走 iframe。
+ */
+function videoPlayableUrl(video: TopicSelectedVideo) {
+  if (!isDouyinCandidate(video)) return ''
+  const { playUrl, pageUrl } = candidateVideoUrls(video)
+  if (!/^https?:\/\//i.test(playUrl)) return ''
+  // 抖音 CDN 直链需经后端代理才能播放（浏览器直接请求会 403）
+  const token = String(getAuthToken() || '').trim()
+  const qs = new URLSearchParams({ url: playUrl })
+  if (pageUrl) qs.set('page_url', pageUrl)
+  const awemeId = String((video as any).aweme_id || '').trim()
+  if (awemeId) qs.set('aweme_id', awemeId)
+  if (token) qs.set('token', token)
+  return buildApiUrl(`/douyin/proxy-video?${qs.toString()}`)
+}
+
+/**
+ * B 站返回 player.bilibili.com 嵌入地址。
+ */
+function videoEmbedUrl(video: TopicSelectedVideo) {
+  if (isDouyinCandidate(video)) return ''
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const bvid = extractBvid(String(pageUrl || rawUrl || '')) || extractBvid(String(video.title || ''))
+  if (!bvid) return ''
+  const qs = new URLSearchParams({
+    bvid: bvid,
+    page: String(extractBiliPageNumber(video)),
+    high_quality: '1',
+    as_wide: '1',
+    danmaku: '0',
+  })
+  return `https://player.bilibili.com/player.html?${qs.toString()}`
+}
+
+/**
+ * 是否支持内嵌或全屏预览。
+ */
+function canPreviewCandidate(video: TopicSelectedVideo) {
+  return Boolean(videoPlayableUrl(video) || videoEmbedUrl(video))
+}
+
+/**
+ * 切换任务候选卡片上的内嵌预览展开状态。
+ */
+function toggleVideoPreview(jobId: string, video: TopicSelectedVideo) {
+  const key = videoPreviewKey(video)
+  if (!key) return
+  if (videoPreviewState.value[jobId] === key) {
+    delete videoPreviewState.value[jobId]
+    videoPreviewState.value = { ...videoPreviewState.value }
+    return
+  }
+  videoPreviewState.value = { ...videoPreviewState.value, [jobId]: key }
+}
+
+/**
+ * 点击封面：可预览则切换预览，否则打开原页。
+ */
+function handleCandidateCoverClick(jobId: string, video: TopicSelectedVideo) {
+  if (canPreviewCandidate(video)) {
+    toggleVideoPreview(jobId, video)
+    return
+  }
+  openVideoUrl(video)
+}
+
+/**
+ * 工作流推荐卡片封面：合集则拉选集，否则预览或打开。
+ */
+function handleWorkflowResourceCoverClick(video: TopicSelectedVideo) {
+  if (isPlaylistResource(video)) {
+    void pushWorkflowPlaylistSeries(video)
+    return
+  }
+  if (canPreviewCandidate(video)) {
+    openCandidateFullscreen(video)
+    return
+  }
+  openVideoUrl(video)
+}
+
+/**
+ * 在浮层中全屏播放可播或嵌入 URL。
+ */
+function openCandidateFullscreen(video: TopicSelectedVideo) {
+  const playableUrl = videoPlayableUrl(video)
+  const embedUrl = videoEmbedUrl(video)
+  if (!playableUrl && !embedUrl) {
+    openVideoUrl(video)
+    return
+  }
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  candidateFullscreenPreview.value = {
+    visible: true,
+    title: String(video.title || '').trim(),
+    playableUrl,
+    embedUrl,
+    pageUrl: String(pageUrl || rawUrl || '').trim(),
+  }
+}
+
+/**
+ * 从全屏预览打开原视频页。
+ */
+function openCandidateFullscreenSource() {
+  const url = String(candidateFullscreenPreview.value.pageUrl || '').trim()
+  if (!url) return
+  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * 新窗口打开视频页面链接。
+ */
+function openVideoUrl(video: TopicSelectedVideo) {
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const url = String(pageUrl || rawUrl || '').trim()
+  if (!url) return
+  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * 是否存在合法 http(s) 页面链接。
+ */
+function canOpenVideoUrl(video: TopicSelectedVideo) {
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const url = String(pageUrl || rawUrl || '').trim()
+  return /^https?:\/\//i.test(url)
+}
+
+/**
+ * 知识命中卡片的列表 key。
+ */
+function knowledgeHitKey(hit: Record<string, any>, idx: number) {
+  return String(hit.id || hit.source_url || hit.video_url || hit.title || idx)
+}
+
+/**
+ * 新窗口打开知识命中来源链接。
+ */
+function openKnowledgeHitSource(hit: Record<string, any>) {
+  const url = String(hit.source_url || hit.video_url || '').trim()
+  if (!url) return
+  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * 知识命中标题展示（处理纯统计数字标题）。
+ */
+function knowledgeHitDisplayTitle(hit: Record<string, any>) {
+  const title = String(hit.title || '').trim()
+  // 如果标题是纯统计数字字符串，用 UP主+笔记类型 作为展示标题
+  if (!title || looksLikeStatsOnlyTitle(title)) {
+    const up = String(hit.up_name || '').trim()
+    const dur = String(hit.duration_text || '').trim()
+    if (up) return dur ? `${up} · ${dur}` : up
+    return hit.doc_type === 'video' ? '视频笔记' : '主题笔记'
+  }
+  return title
+}
+
+/**
+ * 打开知识库 Markdown 下载链接。
+ */
+function downloadKnowledgeNote(hit: Record<string, any>) {
+  const notePath = String(hit.note_md_path || '').trim()
+  if (!notePath) return
+  const url = `/knowledge/note/download?path=${encodeURIComponent(notePath)}`
+  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * 规范化封面 URL（补全协议与 B 站 CDN 前缀）。
+ */
+function videoCoverUrl(video: TopicSelectedVideo) {
+  const raw = String((video as any).cover || (video as any).pic || (video as any).cover_url || (video as any).thumbnail || '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('/')) return `https://i0.hdslb.com${raw}`
+  if (raw.startsWith('//')) return `https:${raw}`
+  if (raw.startsWith('http://')) return raw.replace(/^http:\/\//i, 'https://')
+  return raw
+}
+
+/**
+ * 判断标题是否像纯播放量等统计字符串。
+ */
+function looksLikeStatsOnlyTitle(text: string) {
+  const t = String(text || '').trim()
+  if (!t) return true
+  if (t.length > 48) return false
+  return /^[0-9.\s:万亿wWkK+]+$/.test(t)
+}
+
+/**
+ * 候选/资源标题展示，统计型标题用关键词或序号兜底。
+ */
+function candidateDisplayTitle(video: TopicSelectedVideo, idx: number) {
+  const title = String(video.title || '').trim()
+  if (title && !looksLikeStatsOnlyTitle(title)) return title
+  // 用关键词兜底，最后用序号
+  const keyword = String((video as any).from_keyword || '').trim()
+  return keyword ? `${keyword} · 视频 ${idx + 1}` : `视频 ${idx + 1}`
+}
+
+/**
+ * 将 stats 字符串拆成标签 chips 展示。
+ */
+function candidateStatItems(video: TopicSelectedVideo) {
+  const raw = String((video as any).stats || '').trim()
+  if (!raw) return [] as Array<{ label: string; value: string }>
+  if (/(播放|弹幕|点赞|评论|收藏)/.test(raw)) {
+    return [{ label: '数据', value: raw }]
+  }
+  const duration = String(video.duration || '').trim()
+  const tokens = raw
+    .replace(/[|｜·•]/g, ' ')
+    .split(/\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => x !== duration)
+  if (!tokens.length) return []
+  const labels = ['播放', '弹幕', '点赞', '评论', '收藏']
+  return tokens.slice(0, labels.length).map((value, i) => ({
+    label: labels[i] || `数据${i + 1}`,
+    value,
+  }))
+}
+
+/**
+ * 队列项状态码转中文。
+ */
+function candidateQueueStatusLabel(status?: string) {
+  const s = String(status || '')
+  if (s === 'waiting_user_pick') return '待选择'
+  if (s === 'init') return '初始化中'
+  if (s === 'queued') return '排队中'
+  if (s === 'running') return '处理中'
+  if (s === 'completed') return '已完成'
+  if (s === 'failed') return '失败'
+  return statusLabel(s)
+}
+
+/**
+ * 候选多选状态在 job 内的唯一键。
+ */
+function candidateSelectKey(jobId: string, video: TopicSelectedVideo) {
+  return `${jobId}::${videoPreviewKey(video) || String(video.index || '')}`
+}
+
+/**
+ * 某候选是否正在提交「总结笔记」请求。
+ */
+function isSelectingCandidateVideo(jobId: string, video: TopicSelectedVideo) {
+  return Boolean(selectingVideoState.value[candidateSelectKey(jobId, video)])
+}
+
+/**
+ * 工作流资源「总结」请求的去重键。
+ */
+function workflowResourceSelectKey(video: TopicSelectedVideo) {
+  return `workflow::${videoPreviewKey(video) || String(video.url || video.title || '')}`
+}
+
+/**
+ * 某工作流资源是否正在创建总结任务。
+ */
+function isSelectingWorkflowResource(video: TopicSelectedVideo) {
+  return Boolean(selectingVideoState.value[workflowResourceSelectKey(video)])
+}
+
+/**
+ * 启发式判断标题是否像合集/系列。
+ */
+function looksLikePlaylistTitle(text?: string) {
+  const title = String(text || '').trim().toLowerCase()
+  if (!title) return false
+  return /合集|全集|全\d+集|系列|课程|专题|速成|系统课|连载|完整篇|全套|一口气|入门到/.test(title)
+}
+
+/**
+ * 是否为合集类资源（标记或标题）。
+ */
+function isPlaylistResource(video: TopicSelectedVideo) {
+  const groupType = String((video as any).resource_group_type || '').trim().toLowerCase()
+  const title = String(video.title || '').trim()
+  return Boolean((video as any).is_playlist) || groupType === 'playlist' || looksLikePlaylistTitle(title)
+}
+
+/**
+ * 归一化为 playlist / course / single_video。
+ */
+function workflowResourceGroupType(video: TopicSelectedVideo) {
+  if (isPlaylistResource(video)) return 'playlist'
+  const groupType = String((video as any).resource_group_type || '').trim().toLowerCase()
+  if (groupType === 'course') return 'course'
+  return 'single_video'
+}
+
+/**
+ * 某父视频在本地展开选集的状态键。
+ */
+function workflowPlaylistSeriesKey(video: TopicSelectedVideo) {
+  return `playlist::${workflowResourceSelectKey(video)}`
+}
+
+/**
+ * 已解析的合集面板数据（含分集）。
+ */
+function workflowPlaylistSeriesPanel(video: TopicSelectedVideo) {
+  return workflowPlaylistSeriesState.value[workflowPlaylistSeriesKey(video)] || null
+}
+
+/**
+ * 合集分集列表。
+ */
+function workflowPlaylistSeriesItems(video: TopicSelectedVideo) {
+  return workflowPlaylistSeriesPanel(video)?.items || []
+}
+
+/**
+ * 是否已展开选集 UI。
+ */
+function isWorkflowPlaylistOpen(video: TopicSelectedVideo) {
+  return Boolean(workflowPlaylistSeriesOpenState.value[workflowPlaylistSeriesKey(video)])
+}
+
+/**
+ * 是否正在请求解析合集。
+ */
+function isWorkflowPlaylistLoading(video: TopicSelectedVideo) {
+  return Boolean(workflowPlaylistSeriesLoadingState.value[workflowPlaylistSeriesKey(video)])
+}
+
+/**
+ * 合集解析错误文案。
+ */
+function workflowPlaylistResolveError(video: TopicSelectedVideo) {
+  return String(workflowPlaylistSeriesErrorState.value[workflowPlaylistSeriesKey(video)] || '').trim()
+}
+
+/**
+ * 推送/收起选集按钮文案。
+ */
+function workflowPlaylistActionLabel(video: TopicSelectedVideo) {
+  if (isWorkflowPlaylistLoading(video)) return '推送中'
+  if (isWorkflowPlaylistOpen(video) && workflowPlaylistSeriesItems(video).length) return '收起选集'
+  return '推送选集'
+}
+
+/**
+ * 分集在列表中的 React key 用字符串。
+ */
+function playlistSeriesItemKey(video: TopicSelectedVideo, idx: number) {
+  return `${workflowPlaylistSeriesKey(video)}::${videoPreviewKey(video) || String(video.url || video.title || idx)}`
+}
+
+/**
+ * 单集唯一键（预览键或 url）。
+ */
+function workflowPlaylistEpisodeKey(video: TopicSelectedVideo) {
+  return videoPreviewKey(video) || String(video.url || video.title || '')
+}
+
+/**
+ * 当前选中的分集对象。
+ */
+function workflowPlaylistActiveEpisode(video: TopicSelectedVideo) {
+  const parentKey = workflowPlaylistSeriesKey(video)
+  const items = workflowPlaylistSeriesItems(video)
+  if (!items.length) return null
+  const activeKey = String(workflowPlaylistActiveEpisodeState.value[parentKey] || '').trim()
+  return items.find((item) => workflowPlaylistEpisodeKey(item) === activeKey) || items[0] || null
+}
+
+/**
+ * 当前选中分集的键。
+ */
+function workflowPlaylistActiveEpisodeKey(video: TopicSelectedVideo) {
+  return workflowPlaylistEpisodeKey(workflowPlaylistActiveEpisode(video) || video)
+}
+
+/**
+ * 当前分集可直播 URL。
+ */
+function workflowPlaylistActivePlayableUrl(video: TopicSelectedVideo) {
+  const active = workflowPlaylistActiveEpisode(video)
+  return active ? videoPlayableUrl(active) : ''
+}
+
+/**
+ * 当前分集嵌入播放 URL。
+ */
+function workflowPlaylistActiveEmbedUrl(video: TopicSelectedVideo) {
+  const active = workflowPlaylistActiveEpisode(video)
+  return active ? videoEmbedUrl(active) : ''
+}
+
+/**
+ * 切换工作流合集内当前播放分集。
+ */
+function selectWorkflowPlaylistEpisode(parentVideo: TopicSelectedVideo, episode: TopicSelectedVideo) {
+  const parentKey = workflowPlaylistSeriesKey(parentVideo)
+  const episodeKey = workflowPlaylistEpisodeKey(episode)
+  if (!episodeKey) return
+  workflowPlaylistActiveEpisodeState.value = {
+    ...workflowPlaylistActiveEpisodeState.value,
+    [parentKey]: episodeKey,
+  }
+}
+
+/**
+ * 解析合集后默认选中与父视频匹配或首集。
+ */
+function initializeWorkflowPlaylistActiveEpisode(parentVideo: TopicSelectedVideo, items: TopicSelectedVideo[]) {
+  const parentKey = workflowPlaylistSeriesKey(parentVideo)
+  const current = String(workflowPlaylistActiveEpisodeState.value[parentKey] || '').trim()
+  if (current) return
+  const targetKey = workflowPlaylistEpisodeKey(parentVideo)
+  const matched = items.find((item) => workflowPlaylistEpisodeKey(item) === targetKey) || items[0] || null
+  if (!matched) return
+  workflowPlaylistActiveEpisodeState.value = {
+    ...workflowPlaylistActiveEpisodeState.value,
+    [parentKey]: workflowPlaylistEpisodeKey(matched),
+  }
+}
+
+/**
+ * 聊天内playlist 卡片的分集列表。
+ */
+function playlistPreviewItems(msg: UiChatMessage) {
+  return Array.isArray(msg.playlistCard?.items) ? msg.playlistCard!.items! : []
+}
+
+/**
+ * playlist 预览当前选中分集。
+ */
+function playlistPreviewActiveEpisode(msg: UiChatMessage) {
+  const items = playlistPreviewItems(msg)
+  if (!items.length) return null
+  const activeKey = String(playlistPreviewActiveEpisodeState.value[msg.localId] || '').trim()
+  return items.find((item) => workflowPlaylistEpisodeKey(item) === activeKey) || items[0] || null
+}
+
+/**
+ * playlist 预览当前分集键。
+ */
+function playlistPreviewActiveEpisodeKey(msg: UiChatMessage) {
+  return workflowPlaylistEpisodeKey(playlistPreviewActiveEpisode(msg) || ({ title: msg.playlistCard?.sourceTitle || '' } as TopicSelectedVideo))
+}
+
+/**
+ * playlist 预览当前分集直链。
+ */
+function playlistPreviewActivePlayableUrl(msg: UiChatMessage) {
+  const active = playlistPreviewActiveEpisode(msg)
+  return active ? videoPlayableUrl(active) : ''
+}
+
+/**
+ * playlist 预览当前分集嵌入 URL。
+ */
+function playlistPreviewActiveEmbedUrl(msg: UiChatMessage) {
+  const active = playlistPreviewActiveEpisode(msg)
+  return active ? videoEmbedUrl(active) : ''
+}
+
+/**
+ * 切换某条消息 playlist 的当前分集。
+ */
+function selectPlaylistPreviewEpisode(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const key = workflowPlaylistEpisodeKey(episode)
+  if (!key) return
+  playlistPreviewActiveEpisodeState.value = {
+    ...playlistPreviewActiveEpisodeState.value,
+    [msg.localId]: key,
+  }
+}
+
+/**
+ * playlist 侧栏当前标签：选集/笔记。
+ */
+function playlistPreviewTab(msg: UiChatMessage) {
+  return playlistPreviewTabState.value[msg.localId] || 'episodes'
+}
+
+/**
+ * playlist 侧栏是否展开。
+ */
+function playlistPreviewSidebarOpen(msg: UiChatMessage) {
+  return Boolean(playlistPreviewSidebarOpenState.value[msg.localId])
+}
+
+/**
+ * 设置某条消息的 playlist 侧栏展开状态。
+ */
+function setPlaylistPreviewSidebarOpen(msg: UiChatMessage, open: boolean) {
+  playlistPreviewSidebarOpenState.value = {
+    ...playlistPreviewSidebarOpenState.value,
+    [msg.localId]: open,
+  }
+}
+
+/**
+ * 切换 playlist 侧栏展开。
+ */
+function togglePlaylistPreviewSidebar(msg: UiChatMessage) {
+  setPlaylistPreviewSidebarOpen(msg, !playlistPreviewSidebarOpen(msg))
+}
+
+/**
+ * 切换 tab 并展开侧栏、清理笔记阅读态。
+ */
+function setPlaylistPreviewTab(msg: UiChatMessage, tab: PlaylistPreviewTab) {
+  playlistPreviewTabState.value = {
+    ...playlistPreviewTabState.value,
+    [msg.localId]: tab,
+  }
+  setPlaylistPreviewSidebarOpen(msg, true)
+  if (tab !== 'notes') {
+    const nextViewing = { ...playlistPreviewViewingNoteState.value }
+    delete nextViewing[msg.localId]
+    playlistPreviewViewingNoteState.value = nextViewing
+  }
+}
+
+/**
+ * 分集多选勾选状态映射。
+ */
+function playlistPreviewSelectedMap(msg: UiChatMessage) {
+  return playlistPreviewSelectionState.value[msg.localId] || {}
+}
+
+/**
+ * 某分集是否被勾选。
+ */
+function isPlaylistPreviewEpisodeSelected(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const episodeKey = workflowPlaylistEpisodeKey(episode)
+  if (!episodeKey) return false
+  return Boolean(playlistPreviewSelectedMap(msg)[episodeKey])
+}
+
+/**
+ * 切换某分集勾选状态。
+ */
+function togglePlaylistPreviewEpisodeSelected(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const episodeKey = workflowPlaylistEpisodeKey(episode)
+  if (!episodeKey) return
+  const next = { ...playlistPreviewSelectedMap(msg) }
+  if (next[episodeKey]) delete next[episodeKey]
+  else next[episodeKey] = true
+  playlistPreviewSelectionState.value = {
+    ...playlistPreviewSelectionState.value,
+    [msg.localId]: next,
+  }
+}
+
+/**
+ * 清空该消息的分集勾选。
+ */
+function clearPlaylistPreviewEpisodeSelection(msg: UiChatMessage) {
+  const next = { ...playlistPreviewSelectionState.value }
+  delete next[msg.localId]
+  playlistPreviewSelectionState.value = next
+}
+
+/**
+ * 已勾选的分集数组。
+ */
+function selectedPlaylistPreviewEpisodes(msg: UiChatMessage) {
+  return playlistPreviewItems(msg).filter((item) => isPlaylistPreviewEpisodeSelected(msg, item))
+}
+
+/**
+ * 已勾选分集数量。
+ */
+function selectedPlaylistPreviewEpisodeCount(msg: UiChatMessage) {
+  return selectedPlaylistPreviewEpisodes(msg).length
+}
+
+/**
+ * 是否已全选所有分集。
+ */
+function playlistPreviewAllSelected(msg: UiChatMessage) {
+  const items = playlistPreviewItems(msg)
+  return items.length > 0 && items.every((item) => isPlaylistPreviewEpisodeSelected(msg, item))
+}
+
+/**
+ * 全选或清空分集勾选。
+ */
+function toggleAllPlaylistPreviewEpisodes(msg: UiChatMessage) {
+  if (playlistPreviewAllSelected(msg)) {
+    clearPlaylistPreviewEpisodeSelection(msg)
+    return
+  }
+  const next: Record<string, boolean> = {}
+  for (const item of playlistPreviewItems(msg)) {
+    const episodeKey = workflowPlaylistEpisodeKey(item)
+    if (episodeKey) next[episodeKey] = true
+  }
+  playlistPreviewSelectionState.value = {
+    ...playlistPreviewSelectionState.value,
+    [msg.localId]: next,
+  }
+}
+
+/**
+ * 该消息下已缓存的分集笔记列表（排序后）。
+ */
+function playlistPreviewNotes(msg: UiChatMessage) {
+  const items: PlaylistPreviewNoteItem[] = Array.isArray(playlistPreviewNotesState.value[msg.localId])
+    ? (playlistPreviewNotesState.value[msg.localId] as PlaylistPreviewNoteItem[])
+    : []
+  return [...items].sort((a, b) => {
+    const ta = Date.parse(String(a.updatedAt || a.createdAt || '')) || 0
+    const tb = Date.parse(String(b.updatedAt || b.createdAt || '')) || 0
+    return tb - ta
+  })
+}
+
+/**
+ * 笔记条数。
+ */
+function playlistPreviewNoteCount(msg: UiChatMessage) {
+  return playlistPreviewNotes(msg).length
+}
+
+/**
+ * 已生成完成的笔记条数。
+ */
+function playlistPreviewReadyNoteCount(msg: UiChatMessage) {
+  return playlistPreviewNotes(msg).filter((item) => item.status === 'ready').length
+}
+
+/**
+ * 按分集键查找笔记项。
+ */
+function playlistPreviewNoteByEpisode(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const episodeKey = workflowPlaylistEpisodeKey(episode)
+  if (!episodeKey) return null
+  return playlistPreviewNotes(msg).find((item) => item.episodeKey === episodeKey) || null
+}
+
+/**
+ * 某分集笔记生成状态。
+ */
+function playlistPreviewEpisodeNoteStatus(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  return playlistPreviewNoteByEpisode(msg, episode)?.status || ''
+}
+
+/**
+ * 分集「总结/查看」按钮文案。
+ */
+function playlistPreviewEpisodeNoteActionLabel(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const status = playlistPreviewEpisodeNoteStatus(msg, episode)
+  if (status === 'ready') return '查看笔记'
+  if (status === 'pending') return '生成中'
+  if (status === 'failed') return '重新生成'
+  return '总结笔记'
+}
+
+/**
+ * 分集笔记状态角标文案。
+ */
+function playlistPreviewEpisodeNoteStatusLabel(msg: UiChatMessage, episode: TopicSelectedVideo) {
+  const status = playlistPreviewEpisodeNoteStatus(msg, episode)
+  if (status === 'ready') return '已生成'
+  if (status === 'pending') return '生成中'
+  if (status === 'failed') return '失败'
+  return ''
+}
+
+/**
+ * 当前正在查看的笔记项。
+ */
+function playlistPreviewViewingNote(msg: UiChatMessage) {
+  const episodeKey = String(playlistPreviewViewingNoteState.value[msg.localId] || '').trim()
+  if (!episodeKey) return null
+  return playlistPreviewNotes(msg).find((item) => item.episodeKey === episodeKey) || null
+}
+
+/**
+ * 打开某条已就绪笔记进入 Markdown 阅读态。
+ */
+function openPlaylistPreviewNote(msg: UiChatMessage, note: PlaylistPreviewNoteItem) {
+  if (!note || note.status !== 'ready' || !String(note.markdown || '').trim()) return
+  setPlaylistPreviewSidebarOpen(msg, true)
+  playlistPreviewViewingNoteState.value = {
+    ...playlistPreviewViewingNoteState.value,
+    [msg.localId]: note.episodeKey,
+  }
+  setPlaylistPreviewTab(msg, 'notes')
+}
+
+/**
+ * 从笔记阅读返回笔记列表。
+ */
+function backToPlaylistPreviewNoteList(msg: UiChatMessage) {
+  const nextViewing = { ...playlistPreviewViewingNoteState.value }
+  delete nextViewing[msg.localId]
+  playlistPreviewViewingNoteState.value = nextViewing
+  setPlaylistPreviewTab(msg, 'notes')
+}
+
+/**
+ * 插入或更新本地分集笔记缓存。
+ */
+function upsertPlaylistPreviewNote(messageLocalId: string, patch: PlaylistPreviewNoteItem) {
+  const current = Array.isArray(playlistPreviewNotesState.value[messageLocalId])
+    ? [...playlistPreviewNotesState.value[messageLocalId]]
+    : []
+  const idx = current.findIndex((item) => item.episodeKey === patch.episodeKey)
+  if (idx >= 0) {
+    current[idx] = {
+      ...current[idx],
+      ...patch,
+      updatedAt: patch.updatedAt || new Date().toISOString(),
+    }
+  } else {
+    current.unshift({
+      ...patch,
+      createdAt: patch.createdAt || new Date().toISOString(),
+      updatedAt: patch.updatedAt || new Date().toISOString(),
+    })
+  }
+  playlistPreviewNotesState.value = {
+    ...playlistPreviewNotesState.value,
+    [messageLocalId]: current,
+  }
+}
+
+/**
+ * 子任务完成后清理 job 与解析中标记。
+ */
+function removePlaylistPreviewNoteJobTracking(jobId: string) {
+  const nextBindings = { ...playlistPreviewNoteJobBindings.value }
+  delete nextBindings[jobId]
+  playlistPreviewNoteJobBindings.value = nextBindings
+  const nextResolving = { ...playlistPreviewNoteResolvingState.value }
+  delete nextResolving[jobId]
+  playlistPreviewNoteResolvingState.value = nextResolving
+}
+
+/**
+ * 格式化笔记时间用于卡片展示。
+ */
+function formatPlaylistPreviewNoteTime(ts?: string) {
+  const raw = String(ts || '').trim()
+  if (!raw) return ''
+  const dt = new Date(raw)
+  if (Number.isNaN(dt.getTime())) return ''
+  return dt.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/**
+ * 将接口返回的分集笔记映射为 UI 结构。
+ */
+function mapPlaylistEpisodeNoteApiItem(item: PlaylistEpisodeNoteItem | null | undefined): PlaylistPreviewNoteItem | null {
+  if (!item || typeof item !== 'object') return null
+  const episodeUrl = String(item.episode_url || item.canonical_episode_url || '').trim()
+  const episodeTitle = String(item.episode_title || '').trim()
+  const episodeKey = workflowPlaylistEpisodeKey({
+    index: typeof item.episode_index === 'number' ? item.episode_index : undefined,
+    title: episodeTitle,
+    url: episodeUrl,
+  } as TopicSelectedVideo)
+  if (!episodeKey) return null
+  return {
+    episodeKey,
+    title: episodeTitle || `第${Number(item.episode_index || 0) || ''}集`,
+    markdown: String(item.markdown_text || '').trim(),
+    url: episodeUrl,
+    jobId: String(item.child_job_id || '').trim() || undefined,
+    fileName: String(item.note_file_name || '').trim() || undefined,
+    createdAt: String(item.created_at || '').trim() || undefined,
+    updatedAt: String(item.updated_at || '').trim() || undefined,
+    status: (['pending', 'ready', 'failed'].includes(String(item.note_status || '').trim())
+      ? String(item.note_status || '').trim()
+      : 'pending') as PlaylistPreviewNoteStatus,
+  }
+}
+
+/**
+ * 从服务端拉取某条消息的 playlist 笔记并填充状态。
+ */
+async function hydratePlaylistPreviewNotes(msg: UiChatMessage) {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  if (!sessionUuid || !msg.messageId) return
+  try {
+    const res = await listPlaylistEpisodeNotesApi(sessionUuid, msg.messageId)
+    const mapped = (res.items || [])
+      .map((item) => mapPlaylistEpisodeNoteApiItem(item))
+      .filter((item): item is PlaylistPreviewNoteItem => Boolean(item))
+    playlistPreviewNotesState.value = {
+      ...playlistPreviewNotesState.value,
+      [msg.localId]: mapped,
+    }
+  } catch {
+    // ignore restore failures; local state can still work for current session
+  }
+}
+
+/**
+ * 将分集笔记绑定持久化到后端。
+ */
+async function persistPlaylistPreviewEpisodeNoteBinding(
+  msg: UiChatMessage,
+  episode: TopicSelectedVideo,
+  payload: {
+    childJobId?: string
+    noteStatus: PlaylistPreviewNoteStatus
+    noteFileName?: string
+    noteMessageId?: number
+  },
+) {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  if (!sessionUuid || !msg.messageId) return
+  const { pageUrl, rawUrl } = candidateVideoUrls(episode)
+  const episodeUrl = String(pageUrl || rawUrl || episode.url || '').trim()
+  if (!episodeUrl) return
+  try {
+    const res = await savePlaylistEpisodeNoteApi(sessionUuid, msg.messageId, {
+      playlist_source_url: String(msg.playlistCard?.sourceUrl || '').trim(),
+      playlist_title: String(msg.playlistCard?.sourceTitle || '').trim(),
+      episode_index: typeof episode.index === 'number' ? episode.index : null,
+      episode_title: candidateDisplayTitle(episode, typeof episode.index === 'number' ? episode.index - 1 : 0),
+      episode_url: episodeUrl,
+      child_job_id: String(payload.childJobId || '').trim(),
+      note_status: payload.noteStatus,
+      note_file_name: String(payload.noteFileName || '').trim(),
+      note_message_id: typeof payload.noteMessageId === 'number' ? payload.noteMessageId : null,
+    })
+    const mapped = mapPlaylistEpisodeNoteApiItem(res.item || undefined)
+    if (mapped) upsertPlaylistPreviewNote(msg.localId, mapped)
+  } catch {
+    // ignore persistence failures; local state still retains the note card
+  }
+}
+
+/**
+ * 子任务完成后拉取笔记正文并更新 UI 与持久化。
+ */
+async function finalizePlaylistPreviewNoteJob(jobId: string, binding: PlaylistPreviewNoteJobBinding) {
+  if (!binding || playlistPreviewNoteResolvingState.value[jobId]) return
+  playlistPreviewNoteResolvingState.value = {
+    ...playlistPreviewNoteResolvingState.value,
+    [jobId]: true,
+  }
+  try {
+    let noteText = String(jobsStore.jobs[jobId]?.noteText || '').trim()
+    let noteLink = jobsStore.jobs[jobId]?.noteLink || null
+    if (!noteText) {
+      try {
+        noteText = String(await jobsStore.fetchNote(jobId) || '').trim()
+      } catch {
+        noteText = ''
+      }
+    }
+    if (!noteLink) {
+      try {
+        noteLink = await jobsStore.fetchNoteLink(jobId)
+      } catch {
+        noteLink = null
+      }
+    }
+    if (!noteText) {
+      throw new Error('笔记内容为空')
+    }
+    upsertPlaylistPreviewNote(binding.messageLocalId, {
+      episodeKey: binding.episodeKey,
+      title: binding.title,
+      markdown: noteText,
+      url: binding.url,
+      jobId,
+      fileName: String((noteLink as any)?.file_name || `${binding.title}.md`).trim(),
+      status: 'ready',
+      errorMessage: '',
+      updatedAt: new Date().toISOString(),
+    })
+    const targetMessage = messages.value.find((item) => item.localId === binding.messageLocalId) || null
+    const targetEpisode = targetMessage
+      ? playlistPreviewItems(targetMessage).find((item) => workflowPlaylistEpisodeKey(item) === binding.episodeKey) || null
+      : null
+    if (targetMessage && targetEpisode) {
+      await persistPlaylistPreviewEpisodeNoteBinding(targetMessage, targetEpisode, {
+        childJobId: jobId,
+        noteStatus: 'ready',
+        noteFileName: String((noteLink as any)?.file_name || `${binding.title}.md`).trim(),
+      })
+    }
+  } catch (e: any) {
+    upsertPlaylistPreviewNote(binding.messageLocalId, {
+      episodeKey: binding.episodeKey,
+      title: binding.title,
+      markdown: '',
+      url: binding.url,
+      jobId,
+      status: 'failed',
+      errorMessage: String(e?.message || '生成笔记失败'),
+      updatedAt: new Date().toISOString(),
+    })
+    const targetMessage = messages.value.find((item) => item.localId === binding.messageLocalId) || null
+    const targetEpisode = targetMessage
+      ? playlistPreviewItems(targetMessage).find((item) => workflowPlaylistEpisodeKey(item) === binding.episodeKey) || null
+      : null
+    if (targetMessage && targetEpisode) {
+      await persistPlaylistPreviewEpisodeNoteBinding(targetMessage, targetEpisode, {
+        childJobId: jobId,
+        noteStatus: 'failed',
+      })
+    }
+  } finally {
+    removePlaylistPreviewNoteJobTracking(jobId)
+  }
+}
+
+/**
+ * 子任务失败时标记笔记失败并同步后端。
+ */
+function markPlaylistPreviewNoteFailed(jobId: string, binding: PlaylistPreviewNoteJobBinding, errorMessage?: string) {
+  upsertPlaylistPreviewNote(binding.messageLocalId, {
+    episodeKey: binding.episodeKey,
+    title: binding.title,
+    markdown: '',
+    url: binding.url,
+    jobId,
+    status: 'failed',
+    errorMessage: String(errorMessage || '生成笔记失败'),
+    updatedAt: new Date().toISOString(),
+  })
+  const targetMessage = messages.value.find((item) => item.localId === binding.messageLocalId) || null
+  const targetEpisode = targetMessage
+    ? playlistPreviewItems(targetMessage).find((item) => workflowPlaylistEpisodeKey(item) === binding.episodeKey) || null
+    : null
+  if (targetMessage && targetEpisode) {
+    void persistPlaylistPreviewEpisodeNoteBinding(targetMessage, targetEpisode, {
+      childJobId: jobId,
+      noteStatus: 'failed',
+    })
+  }
+  removePlaylistPreviewNoteJobTracking(jobId)
+}
+
+/**
+ * 单集总结：已就绪则打开，否则创建任务并跟踪。
+ */
+async function handlePlaylistPreviewEpisodeNoteAction(
+  msg: UiChatMessage,
+  episode: TopicSelectedVideo,
+  options?: { silent?: boolean },
+) {
+  const existing = playlistPreviewNoteByEpisode(msg, episode)
+  if (existing?.status === 'ready' && String(existing.markdown || '').trim()) {
+    openPlaylistPreviewNote(msg, existing)
+    return 'opened'
+  }
+  if (existing?.status === 'pending') {
+    setPlaylistPreviewTab(msg, 'notes')
+    if (!options?.silent) message.info('该分集正在生成笔记')
+    return 'pending'
+  }
+  const task = await startWorkflowResourceSummaryTask(episode, { successToast: false })
+  if (!task?.job_id) return 'failed'
+  const episodeKey = workflowPlaylistEpisodeKey(episode)
+  if (!episodeKey) return 'failed'
+  const { pageUrl, rawUrl } = candidateVideoUrls(episode)
+  playlistPreviewNoteJobBindings.value = {
+    ...playlistPreviewNoteJobBindings.value,
+    [task.job_id]: {
+      messageLocalId: msg.localId,
+      episodeKey,
+      title: candidateDisplayTitle(episode, typeof episode.index === 'number' ? episode.index - 1 : 0),
+      url: String(pageUrl || rawUrl || episode.url || '').trim(),
+    },
+  }
+  upsertPlaylistPreviewNote(msg.localId, {
+    episodeKey,
+    title: candidateDisplayTitle(episode, typeof episode.index === 'number' ? episode.index - 1 : 0),
+    markdown: '',
+    url: String(pageUrl || rawUrl || episode.url || '').trim(),
+    jobId: task.job_id,
+    status: 'pending',
+    errorMessage: '',
+    updatedAt: new Date().toISOString(),
+  })
+  await persistPlaylistPreviewEpisodeNoteBinding(msg, episode, {
+    childJobId: task.job_id,
+    noteStatus: 'pending',
+  })
+  setPlaylistPreviewTab(msg, 'notes')
+  if (!options?.silent) message.success('已开始生成该分集的笔记')
+  return 'started'
+}
+
+/**
+ * 是否正在批量触发多集总结。
+ */
+function isPlaylistPreviewBatchSummarizing(msg: UiChatMessage) {
+  return Boolean(playlistPreviewBatchSummarizingState.value[msg.localId])
+}
+
+/**
+ * 对指定分集批量启动总结（跳过已有/进行中）。
+ */
+async function summarizePlaylistPreviewEpisodes(msg: UiChatMessage, episodes: TopicSelectedVideo[]) {
+  if (isPlaylistPreviewBatchSummarizing(msg)) return 0
+  const targets = episodes.filter((episode) => {
+    const status = playlistPreviewEpisodeNoteStatus(msg, episode)
+    return status !== 'ready' && status !== 'pending'
+  })
+  if (!targets.length) {
+    setPlaylistPreviewTab(msg, 'notes')
+    message.info('所选分集都已有笔记或正在生成中')
+    return 0
+  }
+  playlistPreviewBatchSummarizingState.value = {
+    ...playlistPreviewBatchSummarizingState.value,
+    [msg.localId]: true,
+  }
+  try {
+    let started = 0
+    for (const episode of targets) {
+      const result = await handlePlaylistPreviewEpisodeNoteAction(msg, episode, { silent: true })
+      if (result === 'started') started += 1
+    }
+    setPlaylistPreviewTab(msg, 'notes')
+    if (started > 0) {
+      message.success(`已开始生成 ${started} 集笔记`)
+    } else {
+      message.info('没有新增需要生成的分集')
+    }
+    return started
+  } finally {
+    const next = { ...playlistPreviewBatchSummarizingState.value }
+    delete next[msg.localId]
+    playlistPreviewBatchSummarizingState.value = next
+  }
+}
+
+/**
+ * 总结当前勾选的分集。
+ */
+async function summarizeSelectedPlaylistPreviewEpisodes(msg: UiChatMessage) {
+  const picked = selectedPlaylistPreviewEpisodes(msg)
+  if (!picked.length) {
+    message.warning('请先勾选要总结的分集')
+    return
+  }
+  const started = await summarizePlaylistPreviewEpisodes(msg, picked)
+  if (started > 0) clearPlaylistPreviewEpisodeSelection(msg)
+}
+
+/**
+ * 一键对全部分集启动总结。
+ */
+async function summarizeAllPlaylistPreviewEpisodes(msg: UiChatMessage) {
+  const items = playlistPreviewItems(msg)
+  if (!items.length) {
+    message.warning('当前没有可生成笔记的分集')
+    return
+  }
+  await summarizePlaylistPreviewEpisodes(msg, items)
+}
+
+/**
+ * 本地追加一条「已推送选集」助手消息。
+ */
+function appendPlaylistPreviewMessage(
+  sourceVideo: TopicSelectedVideo,
+  panel: WorkflowPlaylistSeriesPanel,
+) {
+  const items = Array.isArray(panel.items) ? panel.items : []
+  const preview = appendUiMessage({
+    role: 'assistant',
+    content: `已推送视频选集：${String(panel.source_title || sourceVideo.title || '未命名合集').trim()}`,
+    renderAsMarkdown: false,
+    playlistCard: {
+      sourceTitle: String(panel.source_title || sourceVideo.title || '').trim(),
+      sourceUrl: String(panel.source_url || candidateVideoUrls(sourceVideo).pageUrl || sourceVideo.url || '').trim(),
+      items,
+    },
+  })
+  const initial = items.find((item) => workflowPlaylistEpisodeKey(item) === workflowPlaylistEpisodeKey(sourceVideo)) || items[0] || null
+  if (initial) {
+    playlistPreviewActiveEpisodeState.value = {
+      ...playlistPreviewActiveEpisodeState.value,
+      [preview.localId]: workflowPlaylistEpisodeKey(initial),
+    }
+  }
+  nextTick(() => {
+    const el = messagesContainerRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  }).catch(() => undefined)
+}
+
+/**
+ * 将接口 PlaylistSeriesItem 规范为 TopicSelectedVideo。
+ */
+function normalizeWorkflowPlaylistItems(items: PlaylistSeriesItem[]) {
+  return items
+    .filter((item): item is PlaylistSeriesItem => Boolean(item && typeof item === 'object'))
+    .map((item, idx) => ({
+      ...(item as TopicSelectedVideo),
+      index: typeof item.index === 'number' ? item.index : (typeof item.playlist_index === 'number' ? item.playlist_index : idx + 1),
+      title: String(item.title || '').trim(),
+      url: String(item.url || item.page_url || '').trim(),
+      page_url: String((item as any).page_url || item.url || '').trim(),
+      play_url: String((item as any).play_url || '').trim(),
+      cover: String(item.cover || '').trim(),
+      up: String(item.up || '').trim(),
+      duration: String(item.duration || '').trim(),
+      stats: String(item.stats || '').trim(),
+      platform: String((item as any).platform || 'bili').trim(),
+      resource_group_type: 'single_video',
+      is_playlist: false,
+    }))
+    .filter((item) => Boolean(String(item.url || item.page_url || '').trim()))
+}
+
+/**
+ * 从历史消息 meta.playlist_preview 恢复卡片数据。
+ */
+function playlistPreviewCardFromMeta(meta: any) {
+  const raw = meta?.playlist_preview
+  if (!raw || typeof raw !== 'object') return null
+  const items = normalizeWorkflowPlaylistItems(Array.isArray(raw.items) ? raw.items : [])
+  if (!items.length) return null
+  return {
+    sourceTitle: String(raw.source_title || '').trim(),
+    sourceUrl: String(raw.source_url || '').trim(),
+    items,
+  }
+}
+
+/**
+ * 服务端保存后追加带 messageId 的 playlist 消息。
+ */
+function appendPersistedPlaylistPreviewMessage(msg: ChatMessage) {
+  const playlistCard = playlistPreviewCardFromMeta(msg?.meta || {})
+  const uiMsg = appendUiMessage({
+    messageId: typeof msg?.id === 'number' ? msg.id : undefined,
+    role: 'assistant',
+    content: sanitizeEvidenceTagText(String(msg?.content || '已推送视频选集')),
+    renderAsMarkdown: false,
+    playlistCard,
+  })
+  const initial = Array.isArray(playlistCard?.items) ? playlistCard!.items[0] : null
+  if (initial) {
+    playlistPreviewActiveEpisodeState.value = {
+      ...playlistPreviewActiveEpisodeState.value,
+      [uiMsg.localId]: workflowPlaylistEpisodeKey(initial),
+    }
+  }
+  void hydratePlaylistPreviewNotes(uiMsg)
+  return uiMsg
+}
+
+/**
+ * 解析合集 URL、缓存分集并可写入会话与聊天消息。
+ */
+async function pushWorkflowPlaylistSeries(video: TopicSelectedVideo) {
+  if (!isPlaylistResource(video)) return
+  const key = workflowPlaylistSeriesKey(video)
+  if (workflowPlaylistSeriesState.value[key]?.items?.length) {
+    if (chatSessionUuid.value) {
+      try {
+        const saved = await saveChatPlaylistPreviewMessageApi(chatSessionUuid.value, {
+          source_title: String((workflowPlaylistSeriesState.value[key] as WorkflowPlaylistSeriesPanel).source_title || video.title || '').trim(),
+          source_url: String((workflowPlaylistSeriesState.value[key] as WorkflowPlaylistSeriesPanel).source_url || candidateVideoUrls(video).pageUrl || video.url || '').trim(),
+          items: (workflowPlaylistSeriesState.value[key] as WorkflowPlaylistSeriesPanel).items as PlaylistSeriesItem[],
+        })
+        appendPersistedPlaylistPreviewMessage(saved.message)
+        return
+      } catch {
+        // fall back to local-only message
+      }
+    }
+    appendPlaylistPreviewMessage(video, workflowPlaylistSeriesState.value[key] as WorkflowPlaylistSeriesPanel)
+    return
+  }
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const targetUrl = String(pageUrl || rawUrl || '').trim()
+  if (!targetUrl) {
+    message.warning('该合集缺少可用链接')
+    return
+  }
+  workflowPlaylistSeriesLoadingState.value = { ...workflowPlaylistSeriesLoadingState.value, [key]: true }
+  const nextErrors = { ...workflowPlaylistSeriesErrorState.value }
+  delete nextErrors[key]
+  workflowPlaylistSeriesErrorState.value = nextErrors
+  try {
+    const res = await resolvePlaylistSeriesApi({
+      url: targetUrl,
+      title: String(video.title || '').trim(),
+    })
+    const items = normalizeWorkflowPlaylistItems(Array.isArray(res.items) ? res.items : [])
+    if (!items.length) {
+      throw new Error('合集里没有解析到可用视频')
+    }
+    initializeWorkflowPlaylistActiveEpisode(video, items)
+    workflowPlaylistSeriesState.value = {
+      ...workflowPlaylistSeriesState.value,
+      [key]: {
+        ...res,
+        items,
+      },
+    }
+    if (chatSessionUuid.value) {
+      try {
+        const saved = await saveChatPlaylistPreviewMessageApi(chatSessionUuid.value, {
+          source_title: String(res.source_title || video.title || '').trim(),
+          source_url: String(res.source_url || targetUrl).trim(),
+          items: items as PlaylistSeriesItem[],
+        })
+        appendPersistedPlaylistPreviewMessage(saved.message)
+      } catch {
+        appendPlaylistPreviewMessage(video, {
+          ...res,
+          items,
+        })
+      }
+    } else {
+      appendPlaylistPreviewMessage(video, {
+        ...res,
+        items,
+      })
+    }
+    message.success(`已推送视频选集到聊天窗口，共 ${items.length} 集`)
+  } catch (e: any) {
+    workflowPlaylistSeriesErrorState.value = {
+      ...workflowPlaylistSeriesErrorState.value,
+      [key]: String(e?.message || '推送选集失败').trim(),
+    }
+    message.error(e?.message || '推送选集失败')
+  } finally {
+    const nextLoading = { ...workflowPlaylistSeriesLoadingState.value }
+    delete nextLoading[key]
+    workflowPlaylistSeriesLoadingState.value = nextLoading
+  }
+}
+
+/**
+ * 某任务下候选多选状态。
+ */
+function selectedCandidateMap(jobId: string) {
+  return candidateSelectionState.value[jobId] || {}
+}
+
+/**
+ * 某候选是否被勾选加入队列。
+ */
+function isCandidateSelected(jobId: string, video: TopicSelectedVideo) {
+  return Boolean(selectedCandidateMap(jobId)[candidateSelectKey(jobId, video)])
+}
+
+/**
+ * 切换候选勾选状态。
+ */
+function toggleCandidateSelected(jobId: string, video: TopicSelectedVideo) {
+  const key = candidateSelectKey(jobId, video)
+  const next = { ...selectedCandidateMap(jobId) }
+  next[key] = !next[key]
+  if (!next[key]) delete next[key]
+  candidateSelectionState.value = { ...candidateSelectionState.value, [jobId]: next }
+}
+
+/**
+ * 清空某任务的候选勾选。
+ */
+function clearSelectedCandidates(jobId: string) {
+  const next = { ...candidateSelectionState.value }
+  delete next[jobId]
+  candidateSelectionState.value = next
+}
+
+/**
+ * 全选当前任务全部候选。
+ */
+function selectAllCandidates(jobId: string) {
+  const all = jobVideoCandidates(jobId)
+  const next: Record<string, boolean> = {}
+  for (const v of all) {
+    const key = candidateSelectKey(jobId, v)
+    if (key) next[key] = true
+  }
+  candidateSelectionState.value = { ...candidateSelectionState.value, [jobId]: next }
+}
+
+/**
+ * 返回已勾选的候选视频数组。
+ */
+function selectedCandidates(jobId: string) {
+  return jobVideoCandidates(jobId).filter((v) => isCandidateSelected(jobId, v))
+}
+
+/**
+ * 已选候选数量。
+ */
+function selectedCandidateCount(jobId: string) {
+  return selectedCandidates(jobId).length
+}
+
+/**
+ * 是否正在提交批量加入队列请求。
+ */
+function isBatchSelecting(jobId: string) {
+  return Boolean(batchSelectingJobs.value[jobId])
+}
+
+/**
+ * 将队列批次写回 jobsStore 中任务快照。
+ */
+function applyQueueBatchToJobSnapshot(jobId: string, queueBatch: TopicQueueBatchSummary | null | undefined) {
+  if (!queueBatch) return
+  const jobUi = jobsStore.jobs[jobId]
+  const snap = jobUi?.snapshot
+  if (!snap) return
+  const prevResult = (snap.result as Record<string, any> | null) || {}
+  jobUi.snapshot = {
+    ...snap,
+    result: {
+      ...prevResult,
+      queue_batch: queueBatch as any,
+      video_runs: (queueBatch.items as any) || prevResult.video_runs,
+    } as any,
+  }
+}
+
+/**
+ * 批量提交选中候选进入处理队列并刷新任务。
+ */
+async function selectCandidateVideosBatch(parentJobId: string) {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  if (!sessionUuid) {
+    message.warning('当前会话不存在，无法提交选择')
+    return
+  }
+  const picked = selectedCandidates(parentJobId)
+  if (!picked.length) {
+    message.warning('请先选择至少一个候选视频')
+    return
+  }
+  if (batchSelectingJobs.value[parentJobId]) return
+  batchSelectingJobs.value = { ...batchSelectingJobs.value, [parentJobId]: true }
+  try {
+    const res = await selectChatCandidateVideosBatchApi(sessionUuid, parentJobId, {
+      video_indexes: picked
+        .map((v) => (typeof v.index === 'number' ? v.index : undefined))
+        .filter((x): x is number => typeof x === 'number'),
+      video_urls: picked.map((v) => String(v.url || '').trim()).filter(Boolean),
+    })
+    applyQueueBatchToJobSnapshot(parentJobId, res.queue_batch || null)
+    for (const t of res.enqueued_tasks || []) {
+      if (t?.job_id) chatStore.bindJobToSession(String(t.job_id), sessionUuid)
+    }
+    const savedMsg = (res.assistant_message || null) as ChatMessage | null
+    if (savedMsg) {
+      mapAssistantMessage(savedMsg, (savedMsg.meta?.task as JobCreateResponse | null) ?? null, (savedMsg.meta?.tool_decision as any) || undefined)
+    }
+    jobsStore.setCurrentJob(parentJobId)
+    try {
+      await jobsStore.fetchJob(parentJobId)
+    } catch {
+      // ignore
+    }
+    jobsStore.connectJobEvents(parentJobId)
+    clearSelectedCandidates(parentJobId)
+    message.success(`已加入任务队列：${(res.enqueued_tasks || []).length || picked.length} 个视频`)
+  } catch (e: any) {
+    message.error(e?.message || '批量加入队列失败')
+  } finally {
+    const next = { ...batchSelectingJobs.value }
+    delete next[parentJobId]
+    batchSelectingJobs.value = next
+  }
+}
+
+/**
+ * 单选候选视频创建子任务并更新 UI。
+ */
+async function selectCandidateVideo(parentJobId: string, video: TopicSelectedVideo) {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  const url = String(video.url || '').trim()
+  if (!sessionUuid) {
+    message.warning('当前会话不存在，无法提交选择')
+    return
+  }
+  if (!url) {
+    message.warning('该候选视频缺少链接')
+    return
+  }
+  const key = candidateSelectKey(parentJobId, video)
+  if (selectingVideoState.value[key]) return
+  selectingVideoState.value = { ...selectingVideoState.value, [key]: true }
+  try {
+    const res = await selectChatCandidateVideoApi(sessionUuid, parentJobId, {
+      video_index: typeof video.index === 'number' ? video.index : undefined,
+      video_url: url,
+    })
+    const task = res.task || null
+    applyQueueBatchToJobSnapshot(parentJobId, res.queue_batch || null)
+    const savedMsg = (res.assistant_message || null) as ChatMessage | null
+    if (savedMsg) {
+      const uiMsg = mapAssistantMessage(savedMsg, task, (savedMsg.meta?.tool_decision as any) || undefined)
+      if (task?.job_id) uiMsg.task = task
+    } else {
+      appendUiMessage({
+        role: 'assistant',
+        content: `已根据你的选择开始处理视频：${String(video.title || url)}。`,
+        task,
+        autoTask: true,
+      })
+    }
+    if (task?.job_id) {
+      chatStore.bindJobToSession(task.job_id, sessionUuid)
+      jobsStore.setCurrentJob(task.job_id)
+      knowledgeRetrievalEnabled.value = true
+      try {
+        await jobsStore.fetchJob(task.job_id)
+      } catch {
+        // ignore
+      }
+      jobsStore.connectJobEvents(task.job_id)
+    }
+    await nextTick()
+    const el = messagesContainerRef.value
+    if (el) el.scrollTop = el.scrollHeight
+    message.success('已加入任务队列，开始总结该视频笔记')
+  } catch (e: any) {
+    message.error(e?.message || '选择视频处理失败')
+  } finally {
+    const nextState = { ...selectingVideoState.value }
+    delete nextState[key]
+    selectingVideoState.value = nextState
+  }
+}
+
+/**
+ * 为工作流/playlist 中的视频 URL 创建总结 Job。
+ */
+async function startWorkflowResourceSummaryTask(
+  video: TopicSelectedVideo,
+  options?: { successToast?: string | false },
+) {
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  const { pageUrl, rawUrl } = candidateVideoUrls(video)
+  const url = String(pageUrl || rawUrl || '').trim()
+  if (!sessionUuid) {
+    message.warning('当前会话不存在，无法创建总结任务')
+    return null
+  }
+  if (!url) {
+    message.warning('该视频缺少可用链接')
+    return null
+  }
+  const key = workflowResourceSelectKey(video)
+  if (selectingVideoState.value[key]) return null
+  selectingVideoState.value = { ...selectingVideoState.value, [key]: true }
+  try {
+    const task = await jobsStore.createJob({
+      user_input: url,
+      pipeline_model_name: selectedModel.value || '',
+    })
+    chatStore.bindJobToSession(task.job_id, sessionUuid)
+    jobsStore.setCurrentJob(task.job_id)
+    knowledgeRetrievalEnabled.value = true
+    appendUiMessage({
+      role: 'assistant',
+      content: `已开始总结视频：${String(video.title || url)}。`,
+      task,
+      autoTask: true,
+    })
+    try {
+      await jobsStore.fetchJob(task.job_id)
+    } catch {
+      // ignore
+    }
+    jobsStore.connectJobEvents(task.job_id)
+    await nextTick()
+    const el = messagesContainerRef.value
+    if (el) el.scrollTop = el.scrollHeight
+    if (options?.successToast !== false) {
+      message.success(options?.successToast || '已创建总结任务，完成后会把笔记同步回当前对话')
+    }
+    return task
+  } catch (e: any) {
+    message.error(e?.message || '创建总结任务失败')
+    return null
+  } finally {
+    const nextState = { ...selectingVideoState.value }
+    delete nextState[key]
+    selectingVideoState.value = nextState
+  }
+}
+
+/**
+ * 「总结笔记」入口，创建总结任务。
+ */
+async function summarizeWorkflowResource(video: TopicSelectedVideo) {
+  await startWorkflowResourceSummaryTask(video)
+}
+
+// --- watch：playlist 分集「总结笔记」子任务完成或失败时，回填本地笔记并持久化 ---
+watch(
+  () => Object.entries(playlistPreviewNoteJobBindings.value).map(([jobId, binding]) => {
+    const jobUi = jobsStore.jobs[jobId]
+    const status = String(jobUi?.snapshot?.status || '').trim().toLowerCase()
+    const noteLength = String(jobUi?.noteText || '').length
+    const fileName = String(jobUi?.noteLink?.file_name || '').trim()
+    const errorText = String(jobUi?.snapshot?.error || '').trim()
+    return `${jobId}:${binding.messageLocalId}:${binding.episodeKey}:${status}:${noteLength}:${fileName}:${errorText}`
+  }),
+  () => {
+    for (const [jobId, binding] of Object.entries(playlistPreviewNoteJobBindings.value)) {
+      const status = String(jobsStore.jobs[jobId]?.snapshot?.status || '').trim().toLowerCase()
+      if (status === 'completed' && !playlistPreviewNoteResolvingState.value[jobId]) {
+        void finalizePlaylistPreviewNoteJob(jobId, binding)
+      } else if (status === 'failed' && !playlistPreviewNoteResolvingState.value[jobId]) {
+        markPlaylistPreviewNoteFailed(
+          jobId,
+          binding,
+          String(jobsStore.jobs[jobId]?.snapshot?.error || '生成笔记失败'),
+        )
+      }
+    }
+  },
+  { immediate: true },
+)
+
+/**
+ * 清空输入框、引用与图片并释放 blob。
+ */
+function clearInput() {
+  userInput.value = ''
+  composerQuote.value = null
+  for (const img of composerImages.value) {
+    revokeComposerImagePreview(img.previewUrl)
+  }
+  composerImages.value = []
+}
+
+/**
+ * 任务完成后拉取笔记链接与正文并尝试同步到聊天。
+ */
+async function loadCurrentJobNoteAssets(options?: { silent?: boolean }) {
+  const jobId = jobsStore.currentJobId
+  if (!jobId || !isCurrentJobCompleted.value) return
+  if (loadingCurrentJobNote.value) return
+  loadingCurrentJobNote.value = true
+  try {
+    if (!currentNoteLink.value) {
+      await jobsStore.fetchNoteLink(jobId)
+    }
+    if (!currentNoteText.value) {
+      await jobsStore.fetchNote(jobId)
+    }
+    await syncCurrentJobNoteIntoChatIfNeeded(jobId)
+    if (!options?.silent) message.success('已加载 Markdown 结果')
+  } catch (e: any) {
+    if (!options?.silent) message.error(e?.message || '加载 Markdown 失败')
+  } finally {
+    loadingCurrentJobNote.value = false
+  }
+}
+
+/**
+ * 当前会话是否已有某 job 的笔记消息。
+ */
+function hasJobNoteMessageInCurrentChat(jobId: string) {
+  const target = String(jobId || '').trim()
+  if (!target) return false
+  return messages.value.some((m) => String(m.jobNoteJobId || '').trim() === target)
+}
+
+/**
+ * 将当前任务 Markdown 以助手消息形式写入会话（去重）。
+ */
+async function syncCurrentJobNoteIntoChatIfNeeded(jobIdInput?: string) {
+  const jobId = String(jobIdInput || jobsStore.currentJobId || '').trim()
+  if (!jobId) return
+  const sessionUuid = String(chatSessionUuid.value || chatStore.getJobSourceSession(jobId) || '').trim()
+  if (!sessionUuid) return
+  const md = String(currentNoteText.value || '').trim()
+  if (!md) return
+  if (hasJobNoteMessageInCurrentChat(jobId)) return
+  if (syncingJobNoteMessageByJobId.value[jobId]) return
+
+  syncingJobNoteMessageByJobId.value = { ...syncingJobNoteMessageByJobId.value, [jobId]: true }
+  try {
+    const res = await saveChatJobNoteMessageApi(sessionUuid, jobId, {
+      markdown_text: md,
+      file_name: String(currentNoteLink.value?.file_name || ''),
+    })
+    const savedMsg = (res.assistant_message || null) as ChatMessage | null
+    if (savedMsg && !hasJobNoteMessageInCurrentChat(jobId)) {
+      mapAssistantMessage(savedMsg, (savedMsg.meta?.task as JobCreateResponse | null) ?? null, (savedMsg.meta?.tool_decision as any) || undefined)
+      await nextTick()
+      const el = messagesContainerRef.value
+      if (el) el.scrollTop = el.scrollHeight
+    }
+  } catch {
+    // 不打断主流程：任务已完成，聊天同步失败可稍后重试/刷新恢复
+  } finally {
+    const nextState = { ...syncingJobNoteMessageByJobId.value }
+    delete nextState[jobId]
+    syncingJobNoteMessageByJobId.value = nextState
+  }
+}
+
+/**
+ * 从侧栏已完成子任务拉取笔记并插入当前会话。
+ */
+async function addChildNoteToChat(childJobId: string, displayTitle: string) {
+  const jobId = String(childJobId || '').trim()
+  if (!jobId) return
+  const sessionUuid = String(chatSessionUuid.value || '').trim()
+  if (!sessionUuid) {
+    message.warning('请先开启一个对话会话')
+    return
+  }
+  if (hasJobNoteMessageInCurrentChat(jobId)) {
+    message.info('该笔记已在对话中')
+    return
+  }
+  if (childNoteLoadingByJobId.value[jobId]) return
+  childNoteLoadingByJobId.value = { ...childNoteLoadingByJobId.value, [jobId]: true }
+  try {
+    const [noteText, noteLink] = await Promise.all([
+      getJobNoteApi(jobId),
+      getJobNoteLinkApi(jobId).catch(() => null),
+    ])
+    const md = String(noteText || '').trim()
+    if (!md) {
+      message.warning('笔记内容为空，无法加入对话')
+      return
+    }
+    const fileName = String((noteLink as any)?.file_name || displayTitle || `note-${jobId}.md`).trim()
+    const res = await saveChatJobNoteMessageApi(sessionUuid, jobId, {
+      markdown_text: md,
+      file_name: fileName,
+    })
+    const savedMsg = (res.assistant_message || null) as any
+    if (savedMsg && !hasJobNoteMessageInCurrentChat(jobId)) {
+      mapAssistantMessage(savedMsg, null)
+      await nextTick()
+      const el = messagesContainerRef.value
+      if (el) el.scrollTop = el.scrollHeight
+    }
+    message.success('已加入对话，可在聊天中查看完整笔记')
+  } catch (e: any) {
+    message.error(e?.message || '加入对话失败，请重试')
+  } finally {
+    const next = { ...childNoteLoadingByJobId.value }
+    delete next[jobId]
+    childNoteLoadingByJobId.value = next
+  }
+}
+
+/**
+ * 子任务笔记下载 URL。
+ */
+function childNoteDownloadUrl(childJobId: string) {
+  const jobId = String(childJobId || '').trim()
+  if (!jobId) return ''
+  return buildJobNoteDownloadUrl(jobId)
+}
+
+/**
+ * 输入框 Enter 发送（排除 IME 与 Shift+Enter）。
+ */
+function handleEnterSend(e: KeyboardEvent) {
+  if (e.shiftKey) return
+  const native = e as KeyboardEvent & { keyCode?: number; isComposing?: boolean }
+  const targetComposing = Boolean((e.target as any)?.composing)
+  if (imeComposing.value || native.isComposing || native.keyCode === 229 || targetComposing) return
+  sendMessage()
+}
+
+/**
+ * 输入法组合开始，阻止误触发发送。
+ */
+function onInputCompositionStart() {
+  imeComposing.value = true
+}
+
+/**
+ * 输入法组合结束。
+ */
+function onInputCompositionEnd() {
+  imeComposing.value = false
+}
+
+/**
+ * 任务状态映射为 Naive UI Tag 的 type。
+ */
+function tagType(status?: string) {
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'error'
+  if (status === 'running') return 'success'
+  if (status === 'queued') return 'info'
+  if (status === 'init') return 'info'
+  if (status === 'waiting_user_pick') return 'warning'
+  return 'default'
+}
+
+/**
+ * 任务/工作流状态码转简短中文。
+ */
+function statusLabel(status?: string) {
+  const s = String(status || '').trim().toLowerCase()
+  if (!s) return '未开始'
+  if (s === 'completed') return '已完成'
+  if (s === 'failed') return '失败'
+  if (s === 'running') return '运行中'
+  if (s === 'queued') return '排队中'
+  if (s === 'init') return '初始化中'
+  if (s === 'waiting_user_pick') return '等待选择视频'
+  return '处理中'
+}
+
+/**
+ * 任务 pipeline 阶段码转侧栏可读说明。
+ */
+function humanizeStage(stage: string) {
+  const s = (stage || '').trim()
+  if (!s) return ''
+  if (s === 'init') return '初始化任务'
+  if (s.includes('search_round_')) return 'AI 正在检索并筛选视频'
+  if (s === 'waiting_user_pick') return '等待你选择要总结的视频'
+  if (s === 'queue_waiting') return '已加入全局队列，等待处理'
+  if (s === 'queue_waiting_children') return '已加入队列，等待逐个处理视频'
+  if (s === 'run_selected_video_pipelines') return '正在处理选中的视频'
+  if (s === 'merge_multi_notes') return 'AI 正在合并多份笔记'
+  if (s === 'search_candidates') return '正在搜索候选视频'
+  if (s === 'ai_select_video') return 'AI 正在筛选候选视频'
+  if (s === 'cleanup') return '正在清理中间文件'
+  if (s === 'completed' || s === 'done') return '任务已完成'
+  if (s === 'extract_audio_url') return '正在准备音频素材'
+  if (s === 'download_audio') return '正在准备音频素材'
+  if (s === 'convert_mp3') return '正在转换音频格式'
+  if (s === 'demucs') return '正在分离人声'
+  if (s === 'transcribe') return '正在语音转文字'
+  if (s === 'generate_note') return 'AI 正在生成笔记'
+  if (s.includes('failed')) return '任务执行失败'
+  return s.replace(/_/g, ' ')
+}
+
+/**
+ * 任务详情中的英文阶段 token 替换为中文。
+ */
+function humanizeDetail(detail: string, stage: string) {
+  let d = (detail || '').trim()
+  if (!d) return ''
+  if ((stage || '').includes('search_round_')) {
+    d = d.replace(/^search_round_\d+[:：]\s*/i, '')
+  }
+  return d
+    .replace(/\bwaiting_user_pick\b/gi, '等待选择视频')
+    .replace(/\bqueue_waiting_children\b/gi, '已入队等待逐个处理')
+    .replace(/\bqueue_waiting\b/gi, '队列等待中')
+    .replace(/\brun_selected_video_pipelines\b/gi, '处理已选视频')
+    .replace(/\bmerge_multi_notes\b/gi, '合并多份笔记')
+    .replace(/\bsearch_candidates\b/gi, '搜索候选视频')
+    .replace(/\bai_select_video\b/gi, '筛选候选视频')
+    .replace(/\binit\b/gi, '初始化')
+}
+
+/**
+ * 侧栏原始日志行润色为简短中文描述。
+ */
+function humanizeSidebarLog(text: string) {
+  const t = (text || '').trim()
+  if (!t) return ''
+  const low = t.toLowerCase()
+  if (/^run:/i.test(t)) return '正在执行处理步骤'
+  if (/开始下载|下载视频中|下载音频|下载视频|download/i.test(t)) return '正在准备媒体素材'
+  if (/视频下载完成|音频下载完成/i.test(t)) return '媒体素材准备完成'
+  if (/(\/app\/|\.m4s\b|\.mp3\b|\.mp4\b|\.wav\b|\.jpg\b|\.png\b)/i.test(t)) return '正在处理媒体素材'
+  if (/https?:\/\//i.test(t) || low.includes('链接')) return '正在处理媒体资源信息'
+  if (t.includes('任务已创建')) return t.replace(/\((queued|running|completed|failed|waiting_user_pick|init)\)/ig, (_, s: string) => `（${statusLabel(s)}）`)
+  return t
+    .replace(/\bwaiting_user_pick\b/gi, '等待选择视频')
+    .replace(/\bqueue_waiting_children\b/gi, '已入队等待逐个处理')
+    .replace(/\bqueue_waiting\b/gi, '队列等待中')
+    .replace(/\brun_selected_video_pipelines\b/gi, '处理已选视频')
+    .replace(/\bmerge_multi_notes\b/gi, '合并多份笔记')
+    .replace(/\bsearch_candidates\b/gi, '搜索候选视频')
+    .replace(/\bai_select_video\b/gi, '筛选候选视频')
+    .replace(/\binit\b/gi, '初始化')
+}
+</script>
+
+<style scoped lang="scss">
+.composer-shell {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.composer-quote {
+  border: 1px solid rgba(191, 219, 254, 0.9);
+  background: rgba(239, 246, 255, 0.92);
+  border-radius: 16px;
+  padding: 9px 12px;
+}
+
+.composer-quote__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.composer-quote__remove {
+  border: 0;
+  background: transparent;
+  color: rgba(29, 78, 216, 0.82);
+  cursor: pointer;
+}
+
+.quote-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 168px;
+  border-radius: 14px;
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+
+.quote-context-menu__item {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  padding: 9px 10px;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.quote-context-menu__item:hover {
+  background: rgba(239, 246, 255, 0.96);
+  color: #1d4ed8;
+}
+
+.image-preview-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  background: rgba(15, 23, 42, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+
+.image-preview-layer__body {
+  max-width: min(92vw, 1200px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.image-preview-layer__img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(92vh - 64px);
+  border-radius: 18px;
+  object-fit: contain;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.image-preview-layer__caption {
+  max-width: min(92vw, 900px);
+  text-align: center;
+  font-size: 12px;
+  color: rgba(241, 245, 249, 0.88);
+  word-break: break-word;
+}
+
+.image-preview-layer__close {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 34px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+
+.video-preview-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1350;
+  background: rgba(2, 6, 23, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+
+.video-preview-layer__body {
+  width: min(94vw, 1440px);
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.video-preview-layer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: rgba(248, 250, 252, 0.96);
+}
+
+.video-preview-layer__title {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.video-preview-layer__link {
+  flex: none;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(248, 250, 252, 0.96);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.video-preview-layer__player {
+  width: 100%;
+  height: min(78vh, 980px);
+  border: 0;
+  border-radius: 20px;
+  background: #000;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
+.video-preview-layer__close {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 34px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+
+.composer-image-chip {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.composer-image-chip__button {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.composer-image-chip__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.composer-image-chip__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(1.5px);
+}
+
+.composer-image-chip__overlay--error {
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.composer-image-chip__progress {
+  --progress: 0%;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at center, rgba(15, 23, 42, 0.86) 58%, transparent 60%),
+    conic-gradient(#ffffff var(--progress), rgba(255, 255, 255, 0.24) 0);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.composer-image-chip__retry {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(15, 23, 42, 0.78);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.composer-image-chip__retry:hover {
+  transform: translateY(-1px) rotate(-18deg);
+  background: rgba(37, 99, 235, 0.92);
+}
+
+.composer-image-chip__remove {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  font-size: 22px;
+  line-height: 1;
+  z-index: 3;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+:global(.dark) .composer-shell {
+  background: rgba(17, 24, 39, 0.55);
+  border-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+:global(.dark) .composer-quote {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(30, 41, 59, 0.86);
+}
+
+:global(.dark) .composer-quote__head {
+  color: rgba(147, 197, 253, 0.96);
+}
+
+:global(.dark) .composer-quote__remove {
+  color: rgba(191, 219, 254, 0.88);
+}
+
+:global(.dark) .quote-context-menu {
+  border-color: rgba(71, 85, 105, 0.68);
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
+}
+
+:global(.dark) .quote-context-menu__item {
+  color: rgba(241, 245, 249, 0.94);
+}
+
+:global(.dark) .quote-context-menu__item:hover {
+  background: rgba(30, 41, 59, 0.92);
+  color: #93c5fd;
+}
+
+:global(.dark) .image-preview-layer__close {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+:global(.dark) .video-preview-layer__close {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+:global(.dark) .video-preview-layer__link {
+  border-color: rgba(148, 163, 184, 0.32);
+  background: rgba(15, 23, 42, 0.82);
+  color: rgba(241, 245, 249, 0.96);
+}
+
+:global(.dark) .composer-image-chip {
+  border-color: rgba(75, 85, 99, 0.78);
+  background: rgba(17, 24, 39, 0.8);
+}
+
+:global(.dark) .composer-image-chip__overlay {
+  background: rgba(2, 6, 23, 0.48);
+}
+
+.knowledge-toggle {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 26px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #fff;
+  color: #1f2937;
+  transition: all 0.2s ease;
+}
+
+.knowledge-toggle:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.knowledge-toggle--active {
+  background: $brand-primary;
+  color: #fff;
+  border-color: $brand-primary;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+}
+
+:global(.dark) .knowledge-toggle {
+  background: rgba(31, 41, 55, 0.95);
+  color: #e5e7eb;
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.search-mode-chip {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 26px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #fff;
+  color: #334155;
+  transition: all 0.2s ease;
+}
+
+.search-mode-chip:hover:not(:disabled) {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.search-mode-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.search-mode-chip--active {
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+.rail-toggle-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 26px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #fff;
+  color: #334155;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rail-toggle-btn:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.rail-toggle-btn--active {
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+.rail-toggle-btn__icon {
+  transition: transform 0.2s ease;
+}
+
+.rail-toggle-btn__icon--open {
+  transform: rotate(180deg);
+}
+
+.search-progress-panel {
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.search-focus-line {
+  color: #6b7280;
+}
+
+:global(.dark) .search-mode-chip {
+  background: rgba(31, 41, 55, 0.95);
+  color: rgba(226, 232, 240, 0.92);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+:global(.dark) .search-mode-chip--active {
+  background: rgba(59, 130, 246, 0.2);
+  color: rgba(191, 219, 254, 0.98);
+  border-color: rgba(96, 165, 250, 0.52);
+}
+
+:global(.dark) .rail-toggle-btn {
+  background: rgba(31, 41, 55, 0.95);
+  color: rgba(226, 232, 240, 0.92);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+:global(.dark) .rail-toggle-btn--active {
+  background: rgba(59, 130, 246, 0.2);
+  color: rgba(191, 219, 254, 0.98);
+  border-color: rgba(96, 165, 250, 0.52);
+}
+
+:global(.dark) .search-progress-panel {
+  border-color: rgba(75, 85, 99, 0.72);
+  background: rgba(17, 24, 39, 0.52);
+}
+
+:global(.dark) .search-focus-line {
+  color: #9ca3af;
+}
+
+.home-shell {
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+}
+
+.home-main-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.task-rail-shell {
+  flex: 0 0 auto;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.task-rail-shell--open {
+  width: clamp(320px, 24vw, 520px);
+}
+
+.task-rail-shell__inner {
+  width: clamp(320px, 24vw, 520px);
+  height: 100%;
+}
+
+.task-rail-drawer-enter-active,
+.task-rail-drawer-leave-active {
+  transition:
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    clip-path 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, clip-path;
+}
+
+.task-rail-drawer-enter-from,
+.task-rail-drawer-leave-to {
+  transform: translateX(44px);
+  clip-path: inset(0 0 0 100% round 16px);
+}
+
+.task-rail-drawer-enter-to,
+.task-rail-drawer-leave-from {
+  transform: translateX(0);
+  clip-path: inset(0 0 0 0 round 16px);
+}
+
+.model-inline-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  transition: all 0.18s ease;
+  max-width: 420px;
+}
+
+.model-inline-trigger:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.model-inline-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.model-inline-trigger__label {
+  font-size: 12px;
+  opacity: 0.65;
+  flex-shrink: 0;
+}
+
+.model-inline-trigger__value {
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:global(.dark) .model-inline-trigger:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+:deep(.right-rail-card > .n-card__content) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:deep(.right-rail-card) {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+:deep(.home-main-card > .n-card__content) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.rail-section {
+  position: relative;
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.035);
+  --rail-accent: rgba(148, 163, 184, 0.45);
+}
+
+.rail-section::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 14px 0 0 14px;
+  background: var(--rail-accent);
+}
+
+.rail-section--meta {
+  --rail-accent: rgba(148, 163, 184, 0.55);
+}
+
+.rail-section--stage {
+  --rail-accent: rgba(59, 130, 246, 0.38);
+}
+
+.rail-section--actions {
+  --rail-accent: rgba(100, 116, 139, 0.38);
+}
+
+.rail-section--plain {
+  --rail-accent: rgba(148, 163, 184, 0.34);
+}
+
+.rail-subpanel {
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.right-rail-scroll {
+  scrollbar-gutter: stable;
+}
+
+.rail-note-preview {
+  max-height: 132px;
+  overflow: auto;
+  margin: 0;
+  padding-right: 2px;
+}
+
+.candidate-queue-panel {
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.candidate-queue-metric {
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.candidate-queue-done-list {
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+  display: grid;
+  gap: 8px;
+}
+
+.candidate-queue-note {
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.candidate-queue-note-preview {
+  max-height: 140px;
+  overflow: auto;
+  margin: 0;
+}
+
+:global(.dark) .rail-section {
+  border-color: rgba(71, 85, 105, 0.66);
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.58), rgba(15, 23, 42, 0.46));
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+}
+
+:global(.dark) :deep(.right-rail-card) {
+  background: rgba(17, 24, 39, 0.94);
+  border-color: rgba(75, 85, 99, 0.72);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.3);
+}
+
+:global(.dark) .rail-section--meta {
+  --rail-accent: rgba(148, 163, 184, 0.38);
+}
+
+:global(.dark) .rail-section--stage {
+  --rail-accent: rgba(96, 165, 250, 0.34);
+}
+
+:global(.dark) .rail-section--actions {
+  --rail-accent: rgba(148, 163, 184, 0.26);
+}
+
+:global(.dark) .rail-section--plain {
+  --rail-accent: rgba(148, 163, 184, 0.22);
+}
+
+:global(.dark) .rail-subpanel {
+  border-color: rgba(71, 85, 105, 0.6);
+  background: rgba(15, 23, 42, 0.34);
+  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.03);
+}
+
+:global(.dark) .candidate-queue-panel {
+  border-color: rgba(71, 85, 105, 0.66);
+  background: rgba(15, 23, 42, 0.46);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+}
+
+:global(.dark) .candidate-queue-metric,
+:global(.dark) .candidate-queue-note {
+  border-color: rgba(71, 85, 105, 0.6);
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.send-icon-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  transition: all 0.18s ease;
+}
+
+.send-icon-btn:hover:not(:disabled) {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  transform: translateY(-1px);
+}
+
+.send-icon-btn--stopping {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.36);
+}
+
+.send-icon-btn--stopping:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.52);
+  box-shadow: 0 10px 24px rgba(127, 29, 29, 0.14);
+}
+
+.send-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+:global(.dark) .send-icon-btn {
+  background: rgba(17, 24, 39, 0.96);
+  color: #f8fafc;
+  border-color: rgba(107, 114, 128, 0.65);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+}
+
+:global(.dark) .send-icon-btn--stopping {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.38);
+}
+
+.send-icon-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.35);
+  border-top-color: currentColor;
+  animation: send-spin 0.8s linear infinite;
+}
+
+@keyframes send-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.message-bubble {
+  border: 1px solid transparent;
+  min-width: 0;
+}
+
+.message-quote-chip {
+  border-radius: 14px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background: rgba(239, 246, 255, 0.88);
+  padding: 10px 12px;
+}
+
+.message-quote-chip__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.message-quote-chip__body {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(30, 41, 59, 0.82);
+}
+
+.message-image-thumb {
+  width: 112px;
+  height: 112px;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(241, 245, 249, 0.92);
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.message-image-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.message-bubble--markdown {
+  white-space: normal;
+  overflow: hidden;
+}
+
+.message-bubble--markdown :deep(.md-content) {
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+
+.message-bubble--markdown :deep(.md-content h1) {
+  font-size: 0.96rem;
+  line-height: 1.5;
+}
+
+.message-bubble--markdown :deep(.md-content h2) {
+  font-size: 0.92rem;
+}
+
+.message-bubble--markdown :deep(.md-content h3),
+.message-bubble--markdown :deep(.md-content h4) {
+  font-size: 0.88rem;
+}
+
+:global(.dark) .message-quote-chip {
+  border-color: rgba(59, 130, 246, 0.34);
+  background: rgba(30, 41, 59, 0.8);
+}
+
+:global(.dark) .message-quote-chip__label {
+  color: rgba(147, 197, 253, 0.95);
+}
+
+:global(.dark) .message-quote-chip__body {
+  color: rgba(226, 232, 240, 0.82);
+}
+
+:global(.dark) .message-image-thumb {
+  border-color: rgba(75, 85, 99, 0.8);
+  background: rgba(17, 24, 39, 0.82);
+}
+
+.rail-md-preview :deep(.md-content) {
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.rail-md-preview :deep(.md-content h1) {
+  font-size: 0.9rem;
+}
+
+.rail-md-preview :deep(.md-content h2) {
+  font-size: 0.84rem;
+}
+
+.rail-md-preview :deep(.md-content h3),
+.rail-md-preview :deep(.md-content h4) {
+  font-size: 0.8rem;
+}
+
+.message-pending,
+.message-pending * {
+  cursor: default !important;
+  user-select: none;
+}
+
+.message-pending {
+  display: inline-flex;
+  width: auto;
+  max-width: max-content;
+}
+
+.thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+  color: rgba(51, 65, 85, 0.9);
+  font-weight: 500;
+}
+
+.thinking-indicator__dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  transform: translateY(1px);
+}
+
+.thinking-indicator__dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.32;
+  animation: thinking-dot-bounce 1s ease-in-out infinite;
+}
+
+.thinking-indicator__dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.thinking-indicator__dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes thinking-dot-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.28;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 0.9;
+  }
+}
+
+:global(.dark) .thinking-indicator {
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.message-assistant {
+  background: rgba(248, 250, 252, 0.95);
+  border-color: rgba(203, 213, 225, 0.65);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+}
+
+.message-assistant--stable {
+  width: min(100%, 980px);
+}
+
+.message-plain-text {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.ai-candidate-panel {
+  background: #fff;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+
+.ai-candidate-panel__title {
+  color: rgba(51, 65, 85, 0.82);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.workflow-playlist-panel {
+  margin-top: 8px;
+  border-radius: 20px;
+  border: 1px solid rgba(191, 219, 254, 0.78);
+  background:
+    radial-gradient(circle at top left, rgba(219, 234, 254, 0.58), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+  padding: 14px;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.08);
+}
+
+.workflow-playlist-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.workflow-playlist-panel__header-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.workflow-playlist-panel__header-main {
+  min-width: 0;
+}
+
+.workflow-playlist-panel__eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $brand-primary;
+}
+
+.workflow-playlist-panel__header-title {
+  margin-top: 4px;
+  font-size: 15px;
+  line-height: 1.45;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.workflow-playlist-panel__count {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(226, 232, 240, 0.7);
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.workflow-playlist-panel__sidebar-toggle {
+  border-radius: 999px;
+  border: 1px solid rgba(191, 219, 254, 0.9);
+  background: rgba(255, 255, 255, 0.9);
+  color: $brand-primary;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.workflow-playlist-panel__sidebar-toggle:hover {
+  border-color: rgba(59, 130, 246, 0.72);
+  transform: translateY(-1px);
+}
+
+.workflow-playlist-panel__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.workflow-playlist-panel__layout--sidebar-open {
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+  gap: 14px;
+}
+
+.workflow-playlist-panel--compact .workflow-playlist-panel__layout--sidebar-open {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workflow-playlist-panel__stage {
+  min-width: 0;
+}
+
+.workflow-playlist-panel__toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.workflow-playlist-panel__toolbar-main {
+  min-width: 0;
+}
+
+.workflow-playlist-panel__toolbar-title {
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: #111827;
+  word-break: break-word;
+}
+
+.workflow-playlist-panel__toolbar-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 11px;
+  color: rgba(71, 85, 105, 0.88);
+}
+
+.workflow-playlist-panel__toolbar-meta > span {
+  position: relative;
+}
+
+.workflow-playlist-panel__toolbar-meta > span:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -6px;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.9);
+  transform: translateY(-50%);
+}
+
+.workflow-playlist-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.workflow-playlist-panel__player-shell {
+  border-radius: 18px;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.06), rgba(148, 163, 184, 0.04));
+  border: 1px solid rgba(203, 213, 225, 0.82);
+}
+
+.workflow-playlist-panel__player-shell--wide {
+  padding: 8px;
+}
+
+.workflow-playlist-panel__player {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.88));
+  aspect-ratio: 16 / 9;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.workflow-playlist-panel__player-shell--wide .workflow-playlist-panel__player {
+  aspect-ratio: 16 / 8.6;
+}
+
+.workflow-playlist-panel__player-frame {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  background: #0f172a;
+}
+
+.workflow-playlist-panel__empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(226, 232, 240, 0.88);
+  font-size: 12px;
+}
+
+.workflow-playlist-panel__sidebar {
+  min-width: 0;
+  border-radius: 18px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.76);
+  padding: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.workflow-playlist-panel__sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.workflow-playlist-panel__sidebar-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workflow-playlist-panel__sidebar-tab {
+  border: 1px solid rgba(191, 219, 254, 0.96);
+  background: rgba(255, 255, 255, 0.92);
+  color: #475569;
+  min-width: 0;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.workflow-playlist-panel__sidebar-tab:hover {
+  border-color: rgba(96, 165, 250, 0.92);
+  color: #1d4ed8;
+}
+
+.workflow-playlist-panel__sidebar-tab--active {
+  border-color: rgba(59, 130, 246, 0.92);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.94));
+  color: #0f172a;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12);
+}
+
+.workflow-playlist-panel__sidebar-tab-badge {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(226, 232, 240, 0.9);
+  color: #334155;
+  font-size: 10px;
+}
+
+.workflow-playlist-panel__sidebar-hint {
+  font-size: 10px;
+  color: rgba(100, 116, 139, 0.88);
+}
+
+.workflow-playlist-panel__batchbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(219, 234, 254, 0.92);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.94), rgba(241, 245, 249, 0.88));
+}
+
+.workflow-playlist-panel__batchbar-summary {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.workflow-playlist-panel__batchbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workflow-playlist-panel__ghost-btn,
+.workflow-playlist-panel__primary-btn {
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.workflow-playlist-panel__ghost-btn {
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  background: rgba(255, 255, 255, 0.92);
+  color: #475569;
+}
+
+.workflow-playlist-panel__primary-btn {
+  border: 1px solid rgba(37, 99, 235, 0.9);
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.98), rgba(29, 78, 216, 0.94));
+  color: #eff6ff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16);
+}
+
+.workflow-playlist-panel__ghost-btn:hover,
+.workflow-playlist-panel__primary-btn:hover {
+  transform: translateY(-1px);
+}
+
+.workflow-playlist-panel__ghost-btn:disabled,
+.workflow-playlist-panel__primary-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.workflow-playlist-panel__list {
+  max-height: 420px;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.workflow-playlist-episode {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  padding: 12px;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.workflow-playlist-episode:hover {
+  border-color: rgba(59, 130, 246, 0.32);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.workflow-playlist-episode--active {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.92));
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.14);
+}
+
+.workflow-playlist-episode__index {
+  flex-shrink: 0;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(226, 232, 240, 0.9);
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workflow-playlist-episode--active .workflow-playlist-episode__index {
+  background: $brand-primary;
+  color: #eff6ff;
+}
+
+.workflow-playlist-episode__select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.workflow-playlist-episode__select-input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.92);
+  background: rgba(255, 255, 255, 0.96);
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.workflow-playlist-episode__select-input:checked {
+  border-color: rgba(37, 99, 235, 0.92);
+  background: $brand-primary;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.18);
+}
+
+.workflow-playlist-episode__select-input:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border-right: 2px solid #eff6ff;
+  border-bottom: 2px solid #eff6ff;
+  transform: rotate(45deg);
+}
+
+.workflow-playlist-episode__main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.workflow-playlist-episode__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.workflow-playlist-episode__title {
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.workflow-playlist-episode__meta {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  color: rgba(71, 85, 105, 0.82);
+}
+
+.workflow-playlist-episode__meta > span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(241, 245, 249, 0.92);
+}
+
+.workflow-playlist-episode__side {
+  min-width: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.workflow-playlist-episode__status {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workflow-playlist-episode__status--ready {
+  background: rgba(220, 252, 231, 0.96);
+  color: #15803d;
+}
+
+.workflow-playlist-episode__status--pending {
+  background: rgba(254, 249, 195, 0.96);
+  color: #a16207;
+}
+
+.workflow-playlist-episode__status--failed {
+  background: rgba(254, 226, 226, 0.96);
+  color: #b91c1c;
+}
+
+.workflow-playlist-episode__note-btn {
+  width: 100%;
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.9));
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.workflow-playlist-episode__note-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(37, 99, 235, 0.36);
+}
+
+.workflow-playlist-episode__note-btn:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.workflow-playlist-note-list {
+  max-height: 486px;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.workflow-playlist-note-card {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  padding: 12px;
+  text-align: left;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.workflow-playlist-note-card:hover {
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.workflow-playlist-note-card--disabled {
+  cursor: default;
+}
+
+.workflow-playlist-note-card--disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.workflow-playlist-note-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-playlist-note-card__status {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workflow-playlist-note-card__status--ready {
+  background: rgba(220, 252, 231, 0.96);
+  color: #15803d;
+}
+
+.workflow-playlist-note-card__status--pending {
+  background: rgba(254, 249, 195, 0.96);
+  color: #a16207;
+}
+
+.workflow-playlist-note-card__status--failed {
+  background: rgba(254, 226, 226, 0.96);
+  color: #b91c1c;
+}
+
+.workflow-playlist-note-card__time {
+  font-size: 10px;
+  color: rgba(100, 116, 139, 0.84);
+}
+
+.workflow-playlist-note-card__title {
+  margin-top: 9px;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.workflow-playlist-note-card__meta {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(71, 85, 105, 0.84);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-playlist-note-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workflow-playlist-note-view__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-playlist-note-view__eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $brand-primary;
+}
+
+.workflow-playlist-note-view__title {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.workflow-playlist-note-view__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(71, 85, 105, 0.84);
+}
+
+.workflow-playlist-note-view__body {
+  max-height: 486px;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.workflow-playlist-note-view__body :deep(.md-content) {
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.workflow-playlist-panel__empty-list {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px dashed rgba(191, 219, 254, 0.96);
+  background: rgba(248, 250, 252, 0.84);
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.84);
+}
+
+@media (max-width: 960px) {
+  .workflow-playlist-panel {
+    padding: 12px;
+  }
+
+  .workflow-playlist-panel__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-playlist-panel__header,
+  .workflow-playlist-panel__toolbar {
+    flex-direction: column;
+  }
+
+  .workflow-playlist-panel__header-side {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .workflow-playlist-panel__sidebar-head,
+  .workflow-playlist-panel__batchbar,
+  .workflow-playlist-note-view__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .workflow-playlist-panel__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .workflow-playlist-panel__batchbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .workflow-playlist-panel__list {
+    max-height: 280px;
+  }
+
+  .workflow-playlist-episode {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .workflow-playlist-episode__side {
+    grid-column: 2;
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  .workflow-playlist-panel__player-shell--wide .workflow-playlist-panel__player {
+    aspect-ratio: 16 / 9;
+  }
+}
+
+/* ── Knowledge Hit Panel ───────────────────────────────── */
+.knowledge-hit-panel {
+  background: #fff;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+
+.knowledge-hit-panel__title {
+  color: rgba(51, 65, 85, 0.82);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.knowledge-hit-panel__footer {
+  color: rgba(71, 85, 105, 0.7);
+}
+
+.knowledge-hit-card {
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 252, 0.85) 100%);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.knowledge-hit-card__title {
+  color: #0f172a;
+}
+
+.knowledge-hit-card__type {
+  color: rgba(71, 85, 105, 0.7);
+}
+
+.knowledge-hit-card__meta {
+  color: rgba(71, 85, 105, 0.95);
+}
+
+.knowledge-hit-card__snippet {
+  color: rgba(51, 65, 85, 0.72);
+}
+
+.ai-candidate-card {
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 252, 0.85) 100%);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.ai-candidate-card:hover {
+  border-color: rgba(148, 163, 184, 0.55);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.ai-candidate-cover {
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.ai-candidate-card__title {
+  color: #0f172a;
+}
+
+.ai-candidate-card__meta {
+  color: rgba(71, 85, 105, 0.95);
+}
+
+.ai-candidate-chip {
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(71, 85, 105, 0.96);
+}
+
+.ai-candidate-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+}
+
+.ai-candidate-cover__trigger {
+  display: block;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-candidate-cover__actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-candidate-cover__action,
+.ai-candidate-cover__fullscreen {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.72);
+  cursor: pointer;
+}
+
+.ai-candidate-cover__fullscreen {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+
+.ai-candidate-cover__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.08), rgba(15, 23, 42, 0.4));
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.ai-candidate-cover:hover .ai-candidate-cover__overlay,
+.ai-candidate-cover:focus-visible .ai-candidate-cover__overlay {
+  opacity: 1;
+}
+
+.ai-candidate-cover__play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+}
+
+.ai-candidate-card__reason {
+  color: rgba(51, 65, 85, 0.84);
+}
+
+.ai-candidate-card__keyword {
+  color: rgba(71, 85, 105, 0.7);
+}
+
+.message-user {
+  background: #fff;
+  border-color: rgba(203, 213, 225, 0.9);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+}
+
+:global(.dark) .message-assistant {
+  background: rgba(31, 41, 55, 0.92);
+  border-color: rgba(75, 85, 99, 0.9);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+}
+
+:global(.dark) .ai-candidate-panel {
+  background: rgba(31, 41, 55, 0.92);
+  border: 1px solid rgba(75, 85, 99, 0.9);
+  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.05), 0 8px 20px rgba(0, 0, 0, 0.24);
+}
+
+:global(.dark) .ai-candidate-panel__title {
+  color: rgba(226, 232, 240, 0.86);
+}
+
+/* ── Knowledge Hit Panel dark ───────────────────────────── */
+:global(.dark) .knowledge-hit-panel {
+  background: rgba(31, 41, 55, 0.92);
+  border: 1px solid rgba(75, 85, 99, 0.9);
+  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.05), 0 8px 20px rgba(0, 0, 0, 0.24);
+}
+
+:global(.dark) .knowledge-hit-panel__title {
+  color: rgba(226, 232, 240, 0.86);
+}
+
+:global(.dark) .knowledge-hit-panel__footer {
+  color: rgba(148, 163, 184, 0.65);
+}
+
+:global(.dark) .knowledge-hit-card {
+  border: 1px solid rgba(75, 85, 99, 0.72);
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.5) 0%, rgba(30, 41, 59, 0.5) 100%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+:global(.dark) .knowledge-hit-card__title {
+  color: rgba(241, 245, 249, 0.97);
+}
+
+:global(.dark) .knowledge-hit-card__type {
+  color: rgba(148, 163, 184, 0.75);
+}
+
+:global(.dark) .knowledge-hit-card__meta {
+  color: rgba(203, 213, 225, 0.9);
+}
+
+:global(.dark) .knowledge-hit-card__snippet {
+  color: rgba(148, 163, 184, 0.82);
+}
+
+:global(.dark) .ai-candidate-card {
+  border: 1px solid rgba(75, 85, 99, 0.72);
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.5) 0%, rgba(30, 41, 59, 0.5) 100%);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.22);
+}
+
+:global(.dark) .ai-candidate-cover__overlay {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.12), rgba(15, 23, 42, 0.56));
+}
+
+:global(.dark) .ai-candidate-cover__play {
+  background: rgba(15, 23, 42, 0.84);
+  color: rgba(241, 245, 249, 0.98);
+}
+
+:global(.dark) .ai-candidate-card:hover {
+  border-color: rgba(148, 163, 184, 0.35);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+}
+
+:global(.dark) .ai-candidate-cover {
+  border-color: rgba(75, 85, 99, 0.72);
+  background: rgba(15, 23, 42, 0.52);
+}
+
+:global(.dark) .ai-candidate-card__title {
+  color: rgba(241, 245, 249, 0.97);
+}
+
+:global(.dark) .ai-candidate-card__meta {
+  color: rgba(203, 213, 225, 0.9);
+}
+
+:global(.dark) .ai-candidate-chip {
+  border-color: rgba(75, 85, 99, 0.82);
+  background: rgba(30, 41, 59, 0.65);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+:global(.dark) .ai-candidate-card__reason {
+  color: rgba(226, 232, 240, 0.8);
+}
+
+:global(.dark) .ai-candidate-card__keyword {
+  color: rgba(203, 213, 225, 0.66);
+}
+
+:global(.dark) .ai-candidate-preview {
+  border-color: rgba(75, 85, 99, 0.72);
+  background: rgba(15, 23, 42, 0.35);
+  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.04);
+}
+
+:global(.dark) .workflow-playlist-panel {
+  border-color: rgba(71, 85, 105, 0.68);
+  background:
+    radial-gradient(circle at top left, rgba(30, 64, 175, 0.16), transparent 30%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.78), rgba(30, 41, 59, 0.62));
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.24);
+}
+
+:global(.dark) .workflow-playlist-panel__header-title,
+:global(.dark) .workflow-playlist-panel__toolbar-title,
+:global(.dark) .workflow-playlist-note-card__title,
+:global(.dark) .workflow-playlist-note-view__title {
+  color: rgba(241, 245, 249, 0.97);
+}
+
+:global(.dark) .workflow-playlist-panel__count {
+  background: rgba(51, 65, 85, 0.8);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+:global(.dark) .workflow-playlist-panel__sidebar-toggle {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: rgba(15, 23, 42, 0.52);
+  color: rgba(191, 219, 254, 0.94);
+}
+
+:global(.dark) .workflow-playlist-panel__toolbar-meta,
+:global(.dark) .workflow-playlist-panel__sidebar-hint,
+:global(.dark) .workflow-playlist-note-card__time,
+:global(.dark) .workflow-playlist-note-card__meta,
+:global(.dark) .workflow-playlist-note-view__meta {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+:global(.dark) .workflow-playlist-panel__player-shell {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.6), rgba(30, 41, 59, 0.5));
+}
+
+:global(.dark) .workflow-playlist-panel__player {
+  border-color: rgba(71, 85, 105, 0.72);
+}
+
+:global(.dark) .workflow-playlist-panel__sidebar {
+  border-color: rgba(71, 85, 105, 0.7);
+  background: rgba(15, 23, 42, 0.42);
+}
+
+:global(.dark) .workflow-playlist-panel__sidebar-tab {
+  border-color: rgba(71, 85, 105, 0.7);
+  background: rgba(15, 23, 42, 0.5);
+  color: rgba(203, 213, 225, 0.86);
+}
+
+:global(.dark) .workflow-playlist-panel__sidebar-tab--active {
+  border-color: rgba(96, 165, 250, 0.58);
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.96), rgba(30, 64, 175, 0.24));
+  color: rgba(241, 245, 249, 0.97);
+}
+
+:global(.dark) .workflow-playlist-panel__sidebar-tab-badge,
+:global(.dark) .workflow-playlist-episode__meta > span,
+:global(.dark) .workflow-playlist-panel__count {
+  background: rgba(51, 65, 85, 0.72);
+}
+
+:global(.dark) .workflow-playlist-panel__batchbar,
+:global(.dark) .workflow-playlist-note-view__body,
+:global(.dark) .workflow-playlist-panel__empty-list {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: rgba(15, 23, 42, 0.4);
+}
+
+:global(.dark) .workflow-playlist-panel__batchbar-summary {
+  color: rgba(226, 232, 240, 0.92);
+}
+
+:global(.dark) .workflow-playlist-panel__ghost-btn {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: rgba(15, 23, 42, 0.52);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+:global(.dark) .workflow-playlist-episode {
+  border-color: rgba(71, 85, 105, 0.62);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.52), rgba(30, 41, 59, 0.44));
+}
+
+:global(.dark) .workflow-playlist-episode:hover {
+  border-color: rgba(96, 165, 250, 0.42);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+}
+
+:global(.dark) .workflow-playlist-episode--active {
+  border-color: rgba(96, 165, 250, 0.48);
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.94), rgba(30, 64, 175, 0.22));
+}
+
+:global(.dark) .workflow-playlist-episode__index {
+  background: rgba(51, 65, 85, 0.92);
+  color: rgba(226, 232, 240, 0.94);
+}
+
+:global(.dark) .workflow-playlist-episode__title {
+  color: rgba(241, 245, 249, 0.97);
+}
+
+:global(.dark) .workflow-playlist-episode__meta {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+:global(.dark) .workflow-playlist-episode__select-input {
+  border-color: rgba(100, 116, 139, 0.9);
+  background: rgba(15, 23, 42, 0.78);
+}
+
+:global(.dark) .workflow-playlist-episode__note-btn {
+  border-color: rgba(96, 165, 250, 0.28);
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.92), rgba(30, 64, 175, 0.2));
+  color: rgba(191, 219, 254, 0.96);
+}
+
+:global(.dark) .workflow-playlist-note-card {
+  border-color: rgba(71, 85, 105, 0.62);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.52), rgba(30, 41, 59, 0.44));
+}
+
+:global(.dark) .workflow-playlist-panel__empty-list {
+  color: rgba(203, 213, 225, 0.82);
+}
+
+:global(.dark) .message-user {
+  background: rgba(17, 24, 39, 0.96);
+  border-color: rgba(107, 114, 128, 0.65);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.ai-avatar {
+  background: rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.user-avatar {
+  background: rgba(59, 130, 246, 0.1);
+  color: $brand-primary;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+:global(.dark) .ai-avatar {
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+:global(.dark) .user-avatar {
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.26);
+}
+
+:deep(.chat-composer-input .n-input-wrapper) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:deep(.chat-composer-input .n-input__textarea-el) {
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+:deep(.chat-composer-input .n-input__border),
+:deep(.chat-composer-input .n-input__state-border) {
+  display: none !important;
+}
+</style>
