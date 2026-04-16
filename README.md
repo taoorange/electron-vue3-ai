@@ -66,6 +66,23 @@ npm install
 npm run rebuild
 ```
 
+#### 验证 Electron 是否安装成功
+
+`npm install` 完成后，建议在项目根目录执行：
+
+```bash
+npx electron -v
+```
+
+若输出版本号，且与 `package.json` 中 `electron` 的主版本一致（例如 `v30.x.x`），说明 Electron 二进制已正确下载。  
+若多次执行 `npm install` 仍失败（常见于拉取 Electron 时出现网络中断、`socket hang up` 等），可开启**科学上网**后重试安装，直到上述命令能稳定输出正确版本。
+
+若 `npx electron -v` 提示要安装与本项目无关的其它大版本 **Electron**，请勿确认该安装，可改用下面命令（强制使用当前项目 `node_modules` 内的 Electron）：
+
+```bash
+npm exec electron -- -v
+```
+
 ### 3.3 申请阿里百炼 API Key 并配置 `.env`
 
 首次下载项目后，建议先完成阿里百炼（DashScope）认证配置，再启动应用。
@@ -124,6 +141,12 @@ npm run dev
 
 - `vite`（前端开发服务，端口 `5174`）
 - Electron 主进程（等待 Vite 就绪后自动启动）
+
+正常情况下，除 Vite 可能会自动打开本地预览页外，**应出现 Electron 桌面应用窗口（本项目的真正运行形态）**。若只有浏览器页面、始终看不到桌面窗口，通常是 Electron 未装好或主进程启动失败，请先完成上文「验证 Electron 是否安装成功」中的版本检查，并留意终端中的报错信息。
+
+`npm run dev` 成功后的界面示例（桌面端窗口标题为「大模型助手」）：
+
+![npm run dev 成功后的 Electron 桌面窗口](docs/readme-assets/npm-run-dev-success.png)
 
 #### 可选：无数据库开发模式
 

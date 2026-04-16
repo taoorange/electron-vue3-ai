@@ -1379,11 +1379,19 @@
                       class="search-mode-chip"
                       :class="{ 'search-mode-chip--active': retrievalModeNetwork }"
                       :disabled="!knowledgeRetrievalEnabled"
-                      @click="retrievalModeNetwork = !retrievalModeNetwork"
                     >
                       联网检索
                     </button>
                     <button
+                      type="button"
+                      class="search-mode-chip"
+                      :class="{ 'search-mode-chip--active': retrievalModeDeepSearch }"
+                      title="调用通义时在请求体中启用 enable_search 与 search_options（agent_max 深度检索，需模型与账号支持）"
+                      @click="retrievalModeDeepSearch = !retrievalModeDeepSearch"
+                    >
+                      深度搜索
+                    </button>
+                    <!-- <button
                       type="button"
                       class="search-mode-chip"
                       :class="{ 'search-mode-chip--active': retrievalModeBili }"
@@ -1400,7 +1408,7 @@
                       @click="retrievalModeDouyin = !retrievalModeDouyin"
                     >
                       抖音检索
-                    </button>
+                    </button> -->
 
                   </div>
                 </div>
@@ -2120,6 +2128,8 @@ const isMacLikePlatform = ref(false)
 const knowledgeRetrievalEnabled = ref(false)
 // 检索模式：联网
 const retrievalModeNetwork = ref(true)
+// 直连阿里云时：是否启用「深度搜索」（enable_search + search_options，见 sendChatMessageByAliQianwenApi）
+const retrievalModeDeepSearch = ref(false)
 // 检索模式：B 站
 const retrievalModeBili = ref(false)
 // 检索模式：抖音
@@ -3792,8 +3802,11 @@ function toggleKnowledgeRetrieval() {
   knowledgeRetrievalEnabled.value = next
   if (next) {
     retrievalModeNetwork.value = true
+    retrievalModeDeepSearch.value = false
     retrievalModeBili.value = false
     retrievalModeDouyin.value = false
+  } else {
+    retrievalModeDeepSearch.value = false
   }
 }
 
@@ -3989,6 +4002,7 @@ function startNewConversation() {
   userInput.value = ''
   knowledgeRetrievalEnabled.value = false
   retrievalModeNetwork.value = true
+  retrievalModeDeepSearch.value = false
   retrievalModeBili.value = false
   retrievalModeDouyin.value = false
   taskRailOpen.value = false
@@ -4038,7 +4052,17 @@ async function ensureChatSession() {
  * 按 URL 中的 session 加载历史消息与任务绑定。
  */
 async function loadSessionFromRoute(sessionUuidFromRoute: string) {
-  const sessionUuid = (sessionUuidFromRoute || '').trim()
+  let sessionUuid = (sessionUuidFromRoute || '').trim()
+  // 刷新后地址栏可能只有 /#/home 没有 ?session=，但 Pinia 已持久化 currentSessionUuid；用其恢复并写回路由，才能从本地 SQLite（Electron）或后端拉消息
+  if (!sessionUuid) {
+    const persisted = String(chatStore.currentSessionUuid || '').trim()
+    if (persisted) {
+      sessionUuid = persisted
+      if (String(route.query.session || '').trim() !== persisted) {
+        void router.replace({ path: route.path, query: { ...route.query, session: persisted } })
+      }
+    }
+  }
   if (!sessionUuid) {
     resetCurrentTaskState()
     chatStore.clearCurrentSession()
@@ -4509,6 +4533,7 @@ async function sendMessage() {
         model_name: selectedModel.value || '',
         auto_task: effectiveAutoTask,
         search_modes: effectiveSearchModes,
+        enable_deep_search: knowledgeRetrievalEnabled.value && retrievalModeDeepSearch.value,
         ...(globalStore.chatTaskParams || {}),
         pipeline_model_name: selectedModel.value || '',
       },

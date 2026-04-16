@@ -600,6 +600,8 @@ export interface ChatReplyRequest {
   playwright_headless?: boolean
   search_headless?: boolean
   pipeline_model_name?: string
+  /** 直连 DashScope 时启用联网 + 深度检索策略（见 `sendChatMessageByAliQianwenApi`） */
+  enable_deep_search?: boolean
 }
 
 export interface ChatImageUploadResponse {

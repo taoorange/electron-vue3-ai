@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: true,
-    open: true,
+    open: false,
     proxy: {
       // 开发环境直连通义可能被 CORS 拦截，走同源代理到 DashScope
       '/compatible-mode': {

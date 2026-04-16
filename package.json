@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"npm:dev:electron\"",
-    "dev:nodb": "concurrently \"vite\" \"npm:dev:electron:nodb\"",
+    "build:electron-ts": "tsc -p electron/tsconfig.json",
+    "dev": "npm run build:electron-ts && concurrently \"vite\" \"npm:dev:electron\"",
+    "dev:nodb": "npm run build:electron-ts && concurrently \"vite\" \"npm:dev:electron:nodb\"",
     "dev:electron": "wait-on tcp:5174 && cross-env VITE_DEV_SERVER_URL=http://localhost:5174 electron .",
     "dev:electron:nodb": "wait-on tcp:5174 && cross-env VITE_DEV_SERVER_URL=http://localhost:5174 ELECTRON_DISABLE_SQLITE=1 electron .",
     "build": "vue-tsc -b && vite build && tsc -p electron/tsconfig.json && npm run build:electron",

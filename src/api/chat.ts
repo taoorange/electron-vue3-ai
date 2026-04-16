@@ -422,6 +422,23 @@ export async function sendChatMessageByAliQianwenApi(
   const base = getDashScopeCompatBaseUrl()
   const url = `${base}/compatible-mode/v1/chat/completions`
 
+  /**
+   * 百炼「联网搜索」扩展参数（非 OpenAI 标准字段，兼容接口顶层传入）。
+   * @see https://help.aliyun.com/zh/model-studio/web-search
+   * 深度搜索：enable_search + search_options.search_strategy（agent 多轮整合；agent_max 含网页抓取，需模型支持）
+   */
+  const compatBody: Record<string, unknown> = {
+    model,
+    messages,
+    stream: true,
+  }
+  if (payload.enable_deep_search) {
+    compatBody.enable_search = true
+    compatBody.search_options = {
+      search_strategy: 'agent_max',
+    }
+  }
+
   const resp = await fetch(url, {
     method: 'POST',
     signal: options.signal,
@@ -429,11 +446,7 @@ export async function sendChatMessageByAliQianwenApi(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: true,
-    }),
+    body: JSON.stringify(compatBody),
   })
 
   if (!resp.ok) {
