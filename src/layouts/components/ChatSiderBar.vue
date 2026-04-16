@@ -178,7 +178,7 @@
       </div>
 
       <!-- 底部用户头像区域 -->
-      <div v-show="!isHeaderVisible" class="p-2 border-t w-full" :style="{ borderColor: themeColors.sidebarBorder }">
+      <div v-show="!isHeaderVisible && isLoggedIn" class="p-2 border-t w-full" :style="{ borderColor: themeColors.sidebarBorder }">
         <NDropdown
           :options="userDropdownOptions"
           trigger="click"
@@ -271,7 +271,7 @@ interface Props {
   historyIcon?: any
   showDeleteButton?: boolean
   emptyMessage?: string
-
+  isLoggedIn?: boolean
   /** 提示文本 */
   toggleSidebarTooltip?: string
 }
@@ -285,7 +285,7 @@ const props = withDefaults(defineProps<Props>(), {
   historyIcon: () => ChatboxOutline as unknown as any,
   showDeleteButton: true,
   emptyMessage: '暂无历史记录',
-
+  isLoggedIn: false,
   toggleSidebarTooltip: '展开侧边栏',
 })
 

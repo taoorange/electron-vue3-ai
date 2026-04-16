@@ -20,17 +20,18 @@
             @open-settings="showSettingsDrawer = true"
             @history-click="onHistoryClick"
             @history-delete="onHistoryDelete"
+            :isLoggedIn="authStore.isLoggedIn"
           />
 
           <!-- 主内容区域 -->
           <AppMain />
         </div>
 
-        <!-- <div class="login-entry-shell" :class="{ 'login-entry-shell--expanded': !isSidebarMinimized }">
+        <div class="login-entry-shell" :class="{ 'login-entry-shell--expanded': !isSidebarMinimized }" v-if="!authStore.isLoggedIn">
           <NButton class="login-entry-btn" size="small" type="primary" strong @click="openLoginModal">
-            {{ authStore.isLoggedIn ? '切换登录' : '登录' }}
+            登录
           </NButton>
-        </div> -->
+        </div>
 
         <NModal
           v-model:show="showLoginModal"
