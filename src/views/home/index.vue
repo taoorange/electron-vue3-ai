@@ -2317,7 +2317,7 @@ function buildStoredMessageMeta(msg: UiChatMessage) {
   }
   if (msg.jobNoteJobId || msg.markdownLabel) {
     const guessedFileName = String(msg.markdownLabel || '').includes('·')
-      ? String(msg.markdownLabel || '').split('·').slice(-1)[0].trim()
+      ? (String(msg.markdownLabel || '').split('·').slice(-1)[0] ?? '').trim()
       : ''
     meta.job_note = {
       job_id: String(msg.jobNoteJobId || '').trim() || undefined,

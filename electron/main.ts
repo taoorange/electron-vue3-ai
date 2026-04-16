@@ -1,8 +1,31 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
+import type { BrowserWindowConstructorOptions } from 'electron'
 import path from 'path'
 
 let loginWindow: BrowserWindow | null = null
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * 主界面与「独立登录窗口」共用同一套尺寸与可缩放行为，避免任意一条路径（如退出登录后）仍停留在 330×500 且无法最大化。
+ * 若需单独做小登录窗，可再拆出 login 专用选项，但需保证 maximizable/resizable 与产品预期一致。
+ */
+function getDefaultWindowOptions(): BrowserWindowConstructorOptions {
+  return {
+    width: 1200,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 768,
+    resizable: true,
+    fullscreenable: true,
+    maximizable: true,
+    minimizable: true,
+    frame: true,
+    show: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  }
+}
 
 const loadUrlWithHash = (win: BrowserWindow, hash: string) => {
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -21,18 +44,7 @@ const loadUrlWithHash = (win: BrowserWindow, hash: string) => {
 
 const createLoginWindow = () => {
   if (loginWindow) return loginWindow
-  loginWindow = new BrowserWindow({
-    width: 330,
-    height: 500,
-    resizable: false,
-    fullscreenable: false,
-    maximizable: false,
-    minimizable: true,
-    frame: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  })
+  loginWindow = new BrowserWindow(getDefaultWindowOptions())
 
   loadUrlWithHash(loginWindow, '/login')
 
@@ -48,19 +60,7 @@ const createMainWindow = () => {
     mainWindow.focus()
     return mainWindow
   }
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 1024,
-    minHeight: 768,
-    resizable: true,
-    fullscreenable: true,
-    maximizable: true,
-    frame: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  })
+  mainWindow = new BrowserWindow(getDefaultWindowOptions())
 
   loadUrlWithHash(mainWindow, '/')
 
@@ -176,10 +176,10 @@ async function registerDbHandlers() {
 app.whenReady().then(async () => {
   await registerDbHandlers()
 
-  // Open login window first
-  createLoginWindow()
+  // 默认打开主窗口（大屏可缩放）；登录小窗仅在退出登录后由 logout-to-login 打开
+  createMainWindow()
 
-  // Switch to main window on request
+  // 从登录小窗切换到主窗口（登录成功后）
   ipcMain.on('open-main-window', () => {
     createMainWindow()
     if (loginWindow) {
@@ -203,5 +203,5 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createLoginWindow()
+  if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
 })

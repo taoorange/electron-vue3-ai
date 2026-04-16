@@ -36,7 +36,9 @@ const routes: Array<RouteRecordRaw> = [
   },
   {
     path: '/login',
-    redirect: '/home',
+    name: 'Login',
+    meta: { title: '登录' },
+    component: () => import('@/views/login/index.vue'),
   },
 ]
 
