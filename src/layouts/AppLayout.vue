@@ -26,11 +26,11 @@
           <AppMain />
         </div>
 
-        <div class="login-entry-shell" :class="{ 'login-entry-shell--expanded': !isSidebarMinimized }">
+        <!-- <div class="login-entry-shell" :class="{ 'login-entry-shell--expanded': !isSidebarMinimized }">
           <NButton class="login-entry-btn" size="small" type="primary" strong @click="openLoginModal">
             {{ authStore.isLoggedIn ? '切换登录' : '登录' }}
           </NButton>
-        </div>
+        </div> -->
 
         <NModal
           v-model:show="showLoginModal"
@@ -57,7 +57,7 @@
           </NForm>
         </NModal>
 
-<!--         设置抽屉-->
+        <!--设置侧边栏-->
         <NDrawer v-model:show="showSettingsDrawer" :width="360" placement="right">
           <NDrawerContent
             title="设置"
@@ -415,7 +415,7 @@ function openPromptStudioFromDrawer() {
 .login-entry-shell {
   position: fixed;
   left: 4px;
-  bottom: 12px;
+  bottom: 120px;
   z-index: 1200;
   width: 56px;
   transition: width 0.24s ease;
